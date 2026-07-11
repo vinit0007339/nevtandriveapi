@@ -1,0 +1,41 @@
+spring:
+  application:
+    name: nevtan-drive-api
+  datasource:
+    url: jdbc:h2:mem:nevtandrive;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  servlet:
+    multipart:
+      max-file-size: ${DRIVE_MAX_UPLOAD_SIZE_BYTES:104857600}B
+      max-request-size: ${DRIVE_MAX_REQUEST_SIZE_BYTES:105906176}B
+
+server:
+  port: ${SERVER_PORT:18080}
+
+nevtan:
+  cloud:
+    enabled: ${NEVTAN_CLOUD_ENABLED:false}
+    base-url: ${NEVTAN_CLOUD_BASE_URL:}
+    api-key: ${NEVTAN_CLOUD_API_KEY:}
+    bucket: ${NEVTAN_CLOUD_BUCKET:}
+    upload-endpoint: ${NEVTAN_CLOUD_UPLOAD_ENDPOINT:}
+    download-endpoint: ${NEVTAN_CLOUD_DOWNLOAD_ENDPOINT:}
+    delete-endpoint: ${NEVTAN_CLOUD_DELETE_ENDPOINT:}
+    signed-url-endpoint: ${NEVTAN_CLOUD_SIGNED_URL_ENDPOINT:}
+
+drive:
+  share-base-url: ${DRIVE_SHARE_BASE_URL:http://localhost:5173/drive/share}
+  storage-limit-bytes: ${DRIVE_STORAGE_LIMIT_BYTES:1073741824}
+  max-upload-size-bytes: ${DRIVE_MAX_UPLOAD_SIZE_BYTES:104857600}
+  blocked-extensions: ${DRIVE_BLOCKED_EXTENSIONS:.exe,.bat,.cmd,.sh,.js,.jar}
+  local-storage:
+    root: ${DRIVE_LOCAL_STORAGE_ROOT:./local-drive-storage}
