@@ -19,7 +19,7 @@ spring:
       max-request-size: ${DRIVE_MAX_REQUEST_SIZE_BYTES:105906176}B
 
 server:
-  port: ${SERVER_PORT:18080}
+  port: ${SERVER_PORT:8081}
 
 nevtan:
   cloud:
@@ -33,9 +33,57 @@ nevtan:
     signed-url-endpoint: ${NEVTAN_CLOUD_SIGNED_URL_ENDPOINT:}
 
 drive:
+  auth:
+    dev-token-enabled: ${DRIVE_DEV_AUTH_ENABLED:true}
   share-base-url: ${DRIVE_SHARE_BASE_URL:http://localhost:5173/drive/share}
   storage-limit-bytes: ${DRIVE_STORAGE_LIMIT_BYTES:1073741824}
   max-upload-size-bytes: ${DRIVE_MAX_UPLOAD_SIZE_BYTES:104857600}
   blocked-extensions: ${DRIVE_BLOCKED_EXTENSIONS:.exe,.bat,.cmd,.sh,.js,.jar}
   local-storage:
     root: ${DRIVE_LOCAL_STORAGE_ROOT:./local-drive-storage}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: stage
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:nevtandrive_stage}?createDatabaseIfNotExist=false&useSSL=true&allowPublicKeyRetrieval=false&serverTimezone=UTC}
+    username: ${MYSQL_USERNAME:nevtandrive_stage}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: ${MYSQL_DDL_AUTO:update}
+    database-platform: org.hibernate.dialect.MySQLDialect
+    properties:
+      hibernate:
+        format_sql: false
+
+drive:
+  auth:
+    dev-token-enabled: ${DRIVE_DEV_AUTH_ENABLED:false}
+  share-base-url: ${DRIVE_SHARE_BASE_URL:http://localhost:5173/drive/share}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:nevtandrive}?createDatabaseIfNotExist=false&useSSL=true&allowPublicKeyRetrieval=false&serverTimezone=UTC}
+    username: ${MYSQL_USERNAME:nevtandrive}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: ${MYSQL_DDL_AUTO:validate}
+    database-platform: org.hibernate.dialect.MySQLDialect
+    properties:
+      hibernate:
+        format_sql: false
+
+drive:
+  auth:
+    dev-token-enabled: ${DRIVE_DEV_AUTH_ENABLED:false}
+  share-base-url: ${DRIVE_SHARE_BASE_URL:http://localhost:5173/drive/share}

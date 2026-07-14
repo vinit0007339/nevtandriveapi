@@ -1,5 +1,6 @@
 package com.nevtan.drive.service;
 
+import com.nevtan.drive.auth.AuthenticatedUser;
 import com.nevtan.drive.dto.CreateDrivePermissionRequest;
 import com.nevtan.drive.dto.DrivePermissionResponse;
 import com.nevtan.drive.dto.SharedDriveFileResponse;
@@ -7,7 +8,6 @@ import com.nevtan.drive.entity.DriveFile;
 import com.nevtan.drive.entity.DrivePermission;
 import com.nevtan.drive.entity.DrivePermissionRole;
 import com.nevtan.drive.exception.DriveAccessDeniedException;
-import com.nevtan.drive.exception.FileNotFoundException;
 import com.nevtan.drive.exception.InvalidDriveRequestException;
 import com.nevtan.drive.repository.DriveFileRepository;
 import com.nevtan.drive.repository.DrivePermissionRepository;
@@ -30,19 +30,20 @@ public class DrivePermissionService {
 
     private final DrivePermissionRepository permissionRepository;
     private final DriveFileRepository fileRepository;
+    private final DriveAuthorizationService authorizationService;
 
     @Transactional
     public DrivePermissionResponse shareFile(
-            String userEmail,
+            AuthenticatedUser currentUser,
             Long fileId,
             CreateDrivePermissionRequest request
     ) {
-        String ownerEmail = normalizeUserEmail(userEmail);
+        String ownerEmail = currentUser.email();
         if (request == null) {
             throw new InvalidDriveRequestException("Permission request is required");
         }
-        DriveFile file = getOwnedActiveFile(ownerEmail, fileId);
-        String sharedWithEmail = normalizeUserEmail(request.sharedWithEmail());
+        DriveFile file = authorizationService.requireOwnedFile(currentUser, fileId);
+        String sharedWithEmail = normalizeRecipientEmail(request.sharedWithEmail());
         if (ownerEmail.equals(sharedWithEmail)) {
             throw new InvalidDriveRequestException("Use the owner role for the file owner");
         }
@@ -66,9 +67,9 @@ public class DrivePermissionService {
     }
 
     @Transactional(readOnly = true)
-    public List<DrivePermissionResponse> listForFile(String userEmail, Long fileId) {
-        String ownerEmail = normalizeUserEmail(userEmail);
-        getOwnedActiveFile(ownerEmail, fileId);
+    public List<DrivePermissionResponse> listForFile(AuthenticatedUser currentUser, Long fileId) {
+        String ownerEmail = currentUser.email();
+        authorizationService.requireOwnedFile(currentUser, fileId);
         List<DrivePermissionResponse> sharedPermissions = permissionRepository
                 .findAllByFileIdAndOwnerEmailOrderByCreatedAtDesc(fileId, ownerEmail)
                 .stream()
@@ -82,8 +83,8 @@ public class DrivePermissionService {
     }
 
     @Transactional
-    public void removeAccess(String userEmail, Long permissionId) {
-        String ownerEmail = normalizeUserEmail(userEmail);
+    public void removeAccess(AuthenticatedUser currentUser, Long permissionId) {
+        String ownerEmail = currentUser.email();
         DrivePermission permission = permissionRepository
                 .findByIdAndOwnerEmail(permissionId, ownerEmail)
                 .orElseThrow(DriveAccessDeniedException::new);
@@ -91,8 +92,8 @@ public class DrivePermissionService {
     }
 
     @Transactional(readOnly = true)
-    public List<SharedDriveFileResponse> listSharedWithMe(String userEmail) {
-        String sharedWithEmail = normalizeUserEmail(userEmail);
+    public List<SharedDriveFileResponse> listSharedWithMe(AuthenticatedUser currentUser) {
+        String sharedWithEmail = currentUser.email();
         return permissionRepository.findAllBySharedWithEmailOrderByUpdatedAtDesc(sharedWithEmail)
                 .stream()
                 .map(permission -> fileRepository
@@ -119,15 +120,15 @@ public class DrivePermissionService {
         }
     }
 
-    public String normalizeUserEmail(String userEmail) {
-        if (userEmail == null || userEmail.isBlank()) {
-            throw new InvalidDriveRequestException("userEmail is required");
+    public String normalizeRecipientEmail(String emailValue) {
+        if (emailValue == null || emailValue.isBlank()) {
+            throw new InvalidDriveRequestException("Email is required");
         }
-        String normalized = userEmail.trim().toLowerCase(Locale.ROOT);
+        String normalized = emailValue.trim().toLowerCase(Locale.ROOT);
         if (!SAFE_EMAIL.matcher(normalized).matches()
                 || normalized.contains("/")
                 || normalized.contains("\\")) {
-            throw new InvalidDriveRequestException("userEmail is invalid");
+            throw new InvalidDriveRequestException("Email is invalid");
         }
         return normalized;
     }
@@ -142,11 +143,6 @@ public class DrivePermissionService {
                 DrivePermissionRole.OWNER.name().toLowerCase(Locale.ROOT),
                 now,
                 now);
-    }
-
-    private DriveFile getOwnedActiveFile(String ownerEmail, Long fileId) {
-        return fileRepository.findByIdAndUserEmailAndDeletedFalse(fileId, ownerEmail)
-                .orElseThrow(() -> new FileNotFoundException(fileId));
     }
 
     private DrivePermissionResponse toResponse(DrivePermission permission) {

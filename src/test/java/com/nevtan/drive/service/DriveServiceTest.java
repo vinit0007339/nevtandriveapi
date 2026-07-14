@@ -1,5 +1,6 @@
 package com.nevtan.drive.service;
 
+import com.nevtan.drive.auth.AuthenticatedUser;
 import com.nevtan.drive.config.DriveProperties;
 import com.nevtan.drive.dto.CreateFolderRequest;
 import com.nevtan.drive.dto.DriveFileResponse;
@@ -47,6 +48,7 @@ import static org.mockito.Mockito.when;
 class DriveServiceTest {
 
     private static final String USER_EMAIL = "user@example.com";
+    private static final AuthenticatedUser USER = new AuthenticatedUser(USER_EMAIL, USER_EMAIL);
 
     @Mock
     private DriveFileRepository fileRepository;
@@ -84,7 +86,7 @@ class DriveServiceTest {
             return file;
         });
 
-        UploadFileResponse result = driveService.upload(USER_EMAIL, null, multipartFile);
+        UploadFileResponse result = driveService.upload(USER, null, multipartFile);
 
         ArgumentCaptor<DriveFile> metadataCaptor = ArgumentCaptor.forClass(DriveFile.class);
         verify(cloudStorageService).upload(
@@ -113,7 +115,7 @@ class DriveServiceTest {
         when(fileRepository.sumStoredFileSizeByUserEmail(USER_EMAIL))
                 .thenReturn(new DriveProperties().getStorageLimitBytes() - 5);
 
-        assertThatThrownBy(() -> driveService.upload(USER_EMAIL, null, multipartFile))
+        assertThatThrownBy(() -> driveService.upload(USER, null, multipartFile))
                 .isInstanceOf(StorageLimitExceededException.class);
 
         verify(cloudStorageService, never()).upload(
@@ -129,7 +131,7 @@ class DriveServiceTest {
         MockMultipartFile multipartFile = new MockMultipartFile(
                 "file", "large.txt", "text/plain", "123456".getBytes());
 
-        assertThatThrownBy(() -> driveService.upload(USER_EMAIL, null, multipartFile))
+        assertThatThrownBy(() -> driveService.upload(USER, null, multipartFile))
                 .isInstanceOf(UploadSizeExceededException.class)
                 .hasMessageContaining("exceeds maximum");
 
@@ -142,7 +144,7 @@ class DriveServiceTest {
         MockMultipartFile multipartFile = new MockMultipartFile(
                 "file", "installer.EXE", "application/octet-stream", "x".getBytes());
 
-        assertThatThrownBy(() -> driveService.upload(USER_EMAIL, null, multipartFile))
+        assertThatThrownBy(() -> driveService.upload(USER, null, multipartFile))
                 .isInstanceOf(InvalidDriveRequestException.class)
                 .hasMessage("File extension is not allowed");
     }
@@ -161,7 +163,7 @@ class DriveServiceTest {
             return saved;
         });
 
-        UploadFileResponse result = driveService.upload(USER_EMAIL, null, multipartFile);
+        UploadFileResponse result = driveService.upload(USER, null, multipartFile);
 
         assertThat(result.file().fileName()).isEqualTo("quarterly_report_.pdf");
         assertThat(result.file().contentType()).isEqualTo("application/pdf");
@@ -178,7 +180,7 @@ class DriveServiceTest {
             return saved;
         });
 
-        UploadFileResponse result = driveService.upload(USER_EMAIL, null, multipartFile);
+        UploadFileResponse result = driveService.upload(USER, null, multipartFile);
 
         assertThat(result.file().contentType()).isEqualTo("application/octet-stream");
     }
@@ -191,7 +193,7 @@ class DriveServiceTest {
         when(fileRepository.saveAndFlush(any(DriveFile.class)))
                 .thenThrow(new IllegalStateException("database unavailable"));
 
-        assertThatThrownBy(() -> driveService.upload(USER_EMAIL, null, multipartFile))
+        assertThatThrownBy(() -> driveService.upload(USER, null, multipartFile))
                 .isInstanceOf(IllegalStateException.class);
 
         ArgumentCaptor<String> objectKey = ArgumentCaptor.forClass(String.class);
@@ -216,7 +218,7 @@ class DriveServiceTest {
             return saved;
         });
 
-        UploadFileResponse result = driveService.upload(USER_EMAIL, 5L, multipartFile);
+        UploadFileResponse result = driveService.upload(USER, 5L, multipartFile);
 
         assertThat(result.file().folderId()).isEqualTo(5L);
     }
@@ -226,7 +228,7 @@ class DriveServiceTest {
         when(fileRepository.sumStoredFileSizeByUserEmail(USER_EMAIL))
                 .thenReturn(new DriveProperties().getStorageLimitBytes() / 4);
 
-        StorageUsageResponse usage = driveService.getStorageUsage(USER_EMAIL);
+        StorageUsageResponse usage = driveService.getStorageUsage(USER);
 
         long storageLimit = new DriveProperties().getStorageLimitBytes();
         assertThat(usage.usedBytes()).isEqualTo(storageLimit / 4);
@@ -242,7 +244,7 @@ class DriveServiceTest {
                         org.mockito.ArgumentMatchers.eq(USER_EMAIL), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(file)));
 
-        Page<DriveFileResponse> result = driveService.listFiles(USER_EMAIL, null, 0, 20);
+        Page<DriveFileResponse> result = driveService.listFiles(USER, null, 0, 20);
 
         assertThat(result.getContent()).containsExactly(new DriveFileResponse(
                 1L,
@@ -272,7 +274,7 @@ class DriveServiceTest {
                         any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(file)));
 
-        Page<DriveFileResponse> result = driveService.listFiles(USER_EMAIL, 8L, 0, 20);
+        Page<DriveFileResponse> result = driveService.listFiles(USER, 8L, 0, 20);
 
         assertThat(result.getContent()).extracting(DriveFileResponse::folderId)
                 .containsExactly(8L);
@@ -286,7 +288,7 @@ class DriveServiceTest {
                 org.mockito.ArgumentMatchers.eq(USER_EMAIL), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(file)));
 
-        Page<DriveFileResponse> result = driveService.listRecentFiles(USER_EMAIL, 0, 20);
+        Page<DriveFileResponse> result = driveService.listRecentFiles(USER, 0, 20);
 
         assertThat(result.getContent()).extracting(DriveFileResponse::id).containsExactly(91L);
         assertThat(result.getContent().get(0).lastOpenedAt()).isEqualTo(file.getLastOpenedAt());
@@ -300,7 +302,7 @@ class DriveServiceTest {
                 org.mockito.ArgumentMatchers.eq(USER_EMAIL), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(file)));
 
-        Page<DriveFileResponse> result = driveService.listStarredFiles(USER_EMAIL, 0, 20);
+        Page<DriveFileResponse> result = driveService.listStarredFiles(USER, 0, 20);
 
         assertThat(result.getContent()).extracting(DriveFileResponse::starred).containsExactly(true);
     }
@@ -312,10 +314,10 @@ class DriveServiceTest {
                 .thenReturn(Optional.of(file));
         when(fileRepository.saveAndFlush(file)).thenReturn(file);
 
-        assertThat(driveService.starFile(USER_EMAIL, 93L).starred()).isTrue();
+        assertThat(driveService.starFile(USER, 93L).starred()).isTrue();
         assertThat(file.isStarred()).isTrue();
 
-        assertThat(driveService.unstarFile(USER_EMAIL, 93L).starred()).isFalse();
+        assertThat(driveService.unstarFile(USER, 93L).starred()).isFalse();
         assertThat(file.isStarred()).isFalse();
     }
 
@@ -329,7 +331,7 @@ class DriveServiceTest {
         when(folderRepository.findByIdAndUserEmailAndDeletedFalse(94L, USER_EMAIL))
                 .thenReturn(Optional.of(folder));
 
-        var result = driveService.getFileDetails(USER_EMAIL, 95L);
+        var result = driveService.getFileDetails(USER, 95L);
 
         assertThat(result.owner()).isEqualTo(USER_EMAIL);
         assertThat(result.location()).isEqualTo("My Drive / Projects");
@@ -345,7 +347,7 @@ class DriveServiceTest {
         when(fileRepository.saveAndFlush(file)).thenReturn(file);
 
         DriveFileResponse result = driveService.renameFile(
-                USER_EMAIL,
+                USER,
                 12L,
                 new RenameFileRequest(" quarterly report.pdf "));
 
@@ -361,7 +363,7 @@ class DriveServiceTest {
                 .thenReturn(Optional.of(file));
 
         assertThatThrownBy(() -> driveService.renameFile(
-                USER_EMAIL,
+                USER,
                 13L,
                 new RenameFileRequest("   ")))
                 .isInstanceOf(InvalidDriveRequestException.class)
@@ -374,7 +376,7 @@ class DriveServiceTest {
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> driveService.renameFile(
-                USER_EMAIL,
+                USER,
                 14L,
                 new RenameFileRequest("new-name.txt")))
                 .isInstanceOf(FileNotFoundException.class);
@@ -391,7 +393,7 @@ class DriveServiceTest {
         when(fileRepository.saveAndFlush(file)).thenReturn(file);
 
         DriveFileResponse result = driveService.moveFile(
-                USER_EMAIL,
+                USER,
                 15L,
                 new MoveFileRequest(16L));
 
@@ -407,7 +409,7 @@ class DriveServiceTest {
         when(fileRepository.saveAndFlush(file)).thenReturn(file);
 
         DriveFileResponse result = driveService.moveFile(
-                USER_EMAIL,
+                USER,
                 17L,
                 new MoveFileRequest(null));
 
@@ -423,7 +425,7 @@ class DriveServiceTest {
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> driveService.moveFile(
-                USER_EMAIL,
+                USER,
                 18L,
                 new MoveFileRequest(19L)))
                 .isInstanceOf(FolderNotFoundException.class);
@@ -443,7 +445,7 @@ class DriveServiceTest {
                 .thenReturn(new PageImpl<>(List.of(file)));
 
         Page<DriveFileResponse> result =
-                driveService.searchFiles(USER_EMAIL, " report ", 0, 20);
+                driveService.searchFiles(USER, " report ", 0, 20);
 
         assertThat(result.getContent()).extracting(DriveFileResponse::fileName)
                 .containsExactly("Quarterly Report.PDF");
@@ -451,16 +453,16 @@ class DriveServiceTest {
 
     @Test
     void rejectsBlankSearchQuery() {
-        assertThatThrownBy(() -> driveService.searchFiles(USER_EMAIL, " ", 0, 20))
+        assertThatThrownBy(() -> driveService.searchFiles(USER, " ", 0, 20))
                 .isInstanceOf(InvalidDriveRequestException.class)
                 .hasMessage("Search query cannot be blank");
     }
 
     @Test
     void rejectsUnsafePaginationValues() {
-        assertThatThrownBy(() -> driveService.listFiles(USER_EMAIL, null, -1, 20))
+        assertThatThrownBy(() -> driveService.listFiles(USER, null, -1, 20))
                 .isInstanceOf(InvalidDriveRequestException.class);
-        assertThatThrownBy(() -> driveService.searchFiles(USER_EMAIL, "report", 0, 101))
+        assertThatThrownBy(() -> driveService.searchFiles(USER, "report", 0, 101))
                 .isInstanceOf(InvalidDriveRequestException.class);
     }
 
@@ -473,7 +475,7 @@ class DriveServiceTest {
                 .thenReturn(Optional.of(file));
         when(cloudStorageService.download(file.getCloudObjectKey())).thenReturn(resource);
 
-        DriveService.DownloadedFile result = driveService.download(USER_EMAIL, 7L);
+        DriveService.DownloadedFile result = driveService.download(USER, 7L);
 
         assertThat(result.resource()).isSameAs(resource);
         assertThat(result.originalFileName()).isEqualTo("document.pdf");
@@ -490,7 +492,7 @@ class DriveServiceTest {
                 .thenReturn(Optional.of(file));
         when(cloudStorageService.download(file.getCloudObjectKey())).thenReturn(resource);
 
-        DriveService.PreviewFile result = driveService.preview(USER_EMAIL, 72L);
+        DriveService.PreviewFile result = driveService.preview(USER, 72L);
 
         assertThat(result.previewSupported()).isTrue();
         assertThat(result.resource()).isSameAs(resource);
@@ -509,7 +511,7 @@ class DriveServiceTest {
         when(fileRepository.findByIdAndUserEmailAndDeletedFalse(73L, USER_EMAIL))
                 .thenReturn(Optional.of(file));
 
-        DriveService.PreviewFile result = driveService.preview(USER_EMAIL, 73L);
+        DriveService.PreviewFile result = driveService.preview(USER, 73L);
 
         assertThat(result.previewSupported()).isFalse();
         assertThat(result.metadata().fileName()).isEqualTo("proposal.docx");
@@ -525,7 +527,7 @@ class DriveServiceTest {
         when(fileRepository.findByIdAndUserEmailAndDeletedFalse(9L, USER_EMAIL))
                 .thenReturn(Optional.of(file));
 
-        driveService.delete(USER_EMAIL, 9L);
+        driveService.delete(USER, 9L);
 
         verify(cloudStorageService, never()).delete(file.getCloudObjectKey());
         assertThat(file.isDeleted()).isTrue();
@@ -543,7 +545,7 @@ class DriveServiceTest {
         when(folderRepository.findByIdAndUserEmailAndDeletedFalse(99L, USER_EMAIL))
                 .thenReturn(Optional.empty());
 
-        DriveFileResponse result = driveService.restoreFile(USER_EMAIL, 10L);
+        DriveFileResponse result = driveService.restoreFile(USER, 10L);
 
         assertThat(result.folderId()).isNull();
         assertThat(file.isDeleted()).isFalse();
@@ -563,7 +565,7 @@ class DriveServiceTest {
         });
 
         DriveFolderResponse result = driveService.createFolder(
-                USER_EMAIL,
+                USER,
                 new CreateFolderRequest(" Projects ", 10L));
 
         assertThat(result.id()).isEqualTo(11L);
@@ -577,7 +579,7 @@ class DriveServiceTest {
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> driveService.createFolder(
-                USER_EMAIL,
+                USER,
                 new CreateFolderRequest("Projects", 10L)))
                 .isInstanceOf(FolderNotFoundException.class);
 
@@ -587,7 +589,7 @@ class DriveServiceTest {
     @Test
     void rejectsBlankFolderName() {
         assertThatThrownBy(() -> driveService.createFolder(
-                USER_EMAIL,
+                USER,
                 new CreateFolderRequest("   ", null)))
                 .isInstanceOf(InvalidDriveRequestException.class)
                 .hasMessage("Folder name cannot be blank");
@@ -604,7 +606,7 @@ class DriveServiceTest {
                         USER_EMAIL, 20L))
                 .thenReturn(List.of(child));
 
-        List<DriveFolderResponse> result = driveService.listFolders(USER_EMAIL, 20L);
+        List<DriveFolderResponse> result = driveService.listFolders(USER, 20L);
 
         assertThat(result).extracting(DriveFolderResponse::name).containsExactly("Child");
     }
@@ -617,7 +619,7 @@ class DriveServiceTest {
         when(folderRepository.save(folder)).thenReturn(folder);
 
         DriveFolderResponse result = driveService.renameFolder(
-                USER_EMAIL,
+                USER,
                 30L,
                 new RenameFolderRequest(" New "));
 
@@ -636,7 +638,7 @@ class DriveServiceTest {
         when(folderRepository.findAllByUserEmailAndParentFolderId(USER_EMAIL, 40L))
                 .thenReturn(List.of());
 
-        driveService.deleteFolder(USER_EMAIL, 40L);
+        driveService.deleteFolder(USER, 40L);
 
         assertThat(folder.isDeleted()).isTrue();
         assertThat(childFile.isDeleted()).isTrue();
@@ -659,7 +661,7 @@ class DriveServiceTest {
         when(folderRepository.findAllByUserEmailAndParentFolderId(USER_EMAIL, 51L))
                 .thenReturn(List.of());
 
-        driveService.deleteFolder(USER_EMAIL, 50L);
+        driveService.deleteFolder(USER, 50L);
 
         assertThat(folder.isDeleted()).isTrue();
         assertThat(child.isDeleted()).isTrue();
@@ -674,7 +676,7 @@ class DriveServiceTest {
         when(fileRepository.findByIdAndUserEmailAndDeletedTrue(60L, USER_EMAIL))
                 .thenReturn(Optional.of(file));
 
-        driveService.permanentlyDeleteFile(USER_EMAIL, 60L);
+        driveService.permanentlyDeleteFile(USER, 60L);
 
         verify(cloudStorageService).delete(file.getCloudObjectKey());
         verify(shareLinkRepository).deleteAllByFileIdAndOwnerEmail(60L, USER_EMAIL);
@@ -701,7 +703,7 @@ class DriveServiceTest {
         when(fileRepository.findAllByUserEmailAndFolderId(USER_EMAIL, 71L))
                 .thenReturn(List.of());
 
-        DriveFolderResponse result = driveService.restoreFolder(USER_EMAIL, 70L);
+        DriveFolderResponse result = driveService.restoreFolder(USER, 70L);
 
         assertThat(result.id()).isEqualTo(70L);
         assertThat(folder.isDeleted()).isFalse();
@@ -719,7 +721,7 @@ class DriveServiceTest {
         when(folderRepository.findAllByUserEmailAndParentFolderId(USER_EMAIL, 80L))
                 .thenReturn(List.of());
 
-        driveService.deleteFolder(USER_EMAIL, 80L);
+        driveService.deleteFolder(USER, 80L);
 
         assertThat(folder.isDeleted()).isTrue();
         verify(folderRepository).save(folder);
@@ -760,6 +762,7 @@ class DriveServiceTest {
                 permissionRepository,
                 shareLinkRepository,
                 cloudStorageService,
-                properties);
+                properties,
+                new DriveAuthorizationService(fileRepository, folderRepository, permissionRepository));
     }
 }

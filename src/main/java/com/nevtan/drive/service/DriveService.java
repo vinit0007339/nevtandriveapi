@@ -1,5 +1,7 @@
 package com.nevtan.drive.service;
 
+import com.nevtan.drive.auth.AuthenticatedUser;
+
 import com.nevtan.drive.config.DriveProperties;
 import com.nevtan.drive.dto.CreateFolderRequest;
 import com.nevtan.drive.dto.DriveFileDetailsResponse;
@@ -12,13 +14,9 @@ import com.nevtan.drive.dto.RenameFileRequest;
 import com.nevtan.drive.dto.RenameFolderRequest;
 import com.nevtan.drive.dto.StorageUsageResponse;
 import com.nevtan.drive.dto.UploadFileResponse;
-import com.nevtan.drive.entity.DrivePermission;
-import com.nevtan.drive.entity.DrivePermissionRole;
 import com.nevtan.drive.entity.DriveFile;
 import com.nevtan.drive.entity.DriveFolder;
 import com.nevtan.drive.exception.CloudStorageException;
-import com.nevtan.drive.exception.DriveAccessDeniedException;
-import com.nevtan.drive.exception.FileNotFoundException;
 import com.nevtan.drive.exception.FolderNotFoundException;
 import com.nevtan.drive.exception.InvalidDriveRequestException;
 import com.nevtan.drive.exception.StorageLimitExceededException;
@@ -58,8 +56,6 @@ public class DriveService {
 
     private static final int MAX_PAGE_SIZE = 100;
     private static final int MAX_FILE_NAME_LENGTH = 255;
-    private static final Pattern SAFE_EMAIL = Pattern.compile(
-            "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$");
     private static final Pattern WINDOWS_RESERVED_NAME = Pattern.compile(
             "(?i)^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\\..*)?$");
     private static final Set<String> EXACT_PREVIEW_TYPES = Set.of(
@@ -74,16 +70,17 @@ public class DriveService {
     private final DriveShareLinkRepository shareLinkRepository;
     private final CloudStorageService cloudStorageService;
     private final DriveProperties driveProperties;
+    private final DriveAuthorizationService authorizationService;
 
     @Transactional(isolation = Isolation.SERIALIZABLE)
     public UploadFileResponse upload(
-            String userEmail,
+            AuthenticatedUser currentUser,
             Long folderId,
             MultipartFile multipartFile
     ) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
+        String normalizedEmail = currentUser.email();
         validateUpload(multipartFile);
-        validateFolderOwnership(normalizedEmail, folderId);
+        authorizationService.requireEditableFolderOrRoot(currentUser, folderId);
 
         long usedBytes = fileRepository.sumStoredFileSizeByUserEmail(normalizedEmail);
         long uploadSize = multipartFile.getSize();
@@ -133,13 +130,13 @@ public class DriveService {
 
     @Transactional(readOnly = true)
     public Page<DriveFileResponse> listFiles(
-            String userEmail,
+            AuthenticatedUser currentUser,
             Long folderId,
             int page,
             int size
     ) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
-        validateFolderOwnership(normalizedEmail, folderId);
+        String normalizedEmail = currentUser.email();
+        authorizationService.requireEditableFolderOrRoot(currentUser, folderId);
         Pageable pageable = filePageable(page, size);
         Page<DriveFile> files = folderId == null
                 ? fileRepository.findAllByUserEmailAndFolderIdIsNullAndDeletedFalse(
@@ -151,11 +148,11 @@ public class DriveService {
 
     @Transactional(readOnly = true)
     public Page<DriveFileResponse> listRecentFiles(
-            String userEmail,
+            AuthenticatedUser currentUser,
             int page,
             int size
     ) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
+        String normalizedEmail = currentUser.email();
         return fileRepository
                 .findAllByUserEmailAndDeletedFalseAndLastOpenedAtIsNotNull(
                         normalizedEmail,
@@ -165,11 +162,11 @@ public class DriveService {
 
     @Transactional(readOnly = true)
     public Page<DriveFileResponse> listStarredFiles(
-            String userEmail,
+            AuthenticatedUser currentUser,
             int page,
             int size
     ) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
+        String normalizedEmail = currentUser.email();
         return fileRepository
                 .findAllByUserEmailAndDeletedFalseAndStarredTrue(
                         normalizedEmail,
@@ -179,16 +176,16 @@ public class DriveService {
 
     @Transactional
     public DriveFileResponse renameFile(
-            String userEmail,
+            AuthenticatedUser currentUser,
             Long fileId,
             RenameFileRequest request
     ) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
+        String normalizedEmail = currentUser.email();
         if (request == null) {
             throw new InvalidDriveRequestException("File rename request is required");
         }
 
-        DriveFile file = getEditableActiveFile(normalizedEmail, fileId);
+        DriveFile file = authorizationService.requireEditableFile(currentUser, fileId);
         String fileName = sanitizeManagedFileName(request.fileName());
         validateBlockedExtension(fileName);
         file.setFileName(fileName);
@@ -197,29 +194,29 @@ public class DriveService {
 
     @Transactional
     public DriveFileResponse moveFile(
-            String userEmail,
+            AuthenticatedUser currentUser,
             Long fileId,
             MoveFileRequest request
     ) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
+        String normalizedEmail = currentUser.email();
         if (request == null) {
             throw new InvalidDriveRequestException("File move request is required");
         }
 
-        DriveFile file = getEditableActiveFile(normalizedEmail, fileId);
-        validateFolderOwnership(file.getUserEmail(), request.folderId());
+        DriveFile file = authorizationService.requireEditableFile(currentUser, fileId);
+        authorizationService.requireEditableFolderOrRoot(currentUser, request.folderId());
         file.setFolderId(request.folderId());
         return toResponse(fileRepository.saveAndFlush(file));
     }
 
     @Transactional(readOnly = true)
     public Page<DriveFileResponse> searchFiles(
-            String userEmail,
+            AuthenticatedUser currentUser,
             String query,
             int page,
             int size
     ) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
+        String normalizedEmail = currentUser.email();
         if (query == null || query.isBlank()) {
             throw new InvalidDriveRequestException("Search query cannot be blank");
         }
@@ -232,15 +229,15 @@ public class DriveService {
 
     @Transactional
     public DriveFolderResponse createFolder(
-            String userEmail,
+            AuthenticatedUser currentUser,
             CreateFolderRequest request
     ) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
+        String normalizedEmail = currentUser.email();
         if (request == null) {
             throw new InvalidDriveRequestException("Folder request is required");
         }
         String name = normalizeFolderName(request.name());
-        validateFolderOwnership(normalizedEmail, request.parentFolderId());
+        authorizationService.requireEditableFolderOrRoot(currentUser, request.parentFolderId());
 
         DriveFolder folder = DriveFolder.builder()
                 .userEmail(normalizedEmail)
@@ -252,9 +249,9 @@ public class DriveService {
     }
 
     @Transactional(readOnly = true)
-    public List<DriveFolderResponse> listFolders(String userEmail, Long parentFolderId) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
-        validateFolderOwnership(normalizedEmail, parentFolderId);
+    public List<DriveFolderResponse> listFolders(AuthenticatedUser currentUser, Long parentFolderId) {
+        String normalizedEmail = currentUser.email();
+        authorizationService.requireEditableFolderOrRoot(currentUser, parentFolderId);
 
         List<DriveFolder> folders = parentFolderId == null
                 ? folderRepository
@@ -268,30 +265,30 @@ public class DriveService {
 
     @Transactional
     public DriveFolderResponse renameFolder(
-            String userEmail,
+            AuthenticatedUser currentUser,
             Long folderId,
             RenameFolderRequest request
     ) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
+        String normalizedEmail = currentUser.email();
         if (request == null) {
             throw new InvalidDriveRequestException("Folder request is required");
         }
-        DriveFolder folder = getOwnedActiveFolder(normalizedEmail, folderId);
+        DriveFolder folder = authorizationService.requireOwnedFolder(currentUser, folderId);
         folder.setName(normalizeFolderName(request.name()));
         return toFolderResponse(folderRepository.save(folder));
     }
 
     @Transactional
-    public void deleteFolder(String userEmail, Long folderId) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
-        DriveFolder folder = getOwnedActiveFolder(normalizedEmail, folderId);
+    public void deleteFolder(AuthenticatedUser currentUser, Long folderId) {
+        String normalizedEmail = currentUser.email();
+        DriveFolder folder = authorizationService.requireOwnedFolder(currentUser, folderId);
 
         softDeleteFolderTree(normalizedEmail, folder);
     }
 
     @Transactional(readOnly = true)
-    public StorageUsageResponse getStorageUsage(String userEmail) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
+    public StorageUsageResponse getStorageUsage(AuthenticatedUser currentUser) {
+        String normalizedEmail = currentUser.email();
         long usedBytes = fileRepository.sumStoredFileSizeByUserEmail(normalizedEmail);
         long storageLimitBytes = driveProperties.getStorageLimitBytes();
         long availableBytes = Math.max(0, storageLimitBytes - usedBytes);
@@ -304,8 +301,8 @@ public class DriveService {
     }
 
     @Transactional
-    public DownloadedFile download(String userEmail, Long fileId) {
-        DriveFile file = getReadableActiveFile(normalizeUserEmail(userEmail), fileId);
+    public DownloadedFile download(AuthenticatedUser currentUser, Long fileId) {
+        DriveFile file = authorizationService.requireReadableFile(currentUser, fileId);
         markOpened(file);
         Resource resource = cloudStorageService.download(file.getCloudObjectKey());
         return new DownloadedFile(
@@ -316,8 +313,8 @@ public class DriveService {
     }
 
     @Transactional
-    public PreviewFile preview(String userEmail, Long fileId) {
-        DriveFile file = getReadableActiveFile(normalizeUserEmail(userEmail), fileId);
+    public PreviewFile preview(AuthenticatedUser currentUser, Long fileId) {
+        DriveFile file = authorizationService.requireReadableFile(currentUser, fileId);
         markOpened(file);
         if (!isPreviewSupported(file.getContentType())) {
             return PreviewFile.unsupported(new FilePreviewMetadataResponse(
@@ -339,30 +336,30 @@ public class DriveService {
     }
 
     @Transactional
-    public void delete(String userEmail, Long fileId) {
-        DriveFile file = getOwnedActiveFile(normalizeUserEmail(userEmail), fileId);
+    public void delete(AuthenticatedUser currentUser, Long fileId) {
+        DriveFile file = authorizationService.requireOwnedFile(currentUser, fileId);
         file.setDeleted(true);
         fileRepository.saveAndFlush(file);
         log.info("event=drive_file_moved_to_trash fileId={}", file.getId());
     }
 
     @Transactional
-    public DriveFileResponse starFile(String userEmail, Long fileId) {
-        DriveFile file = getOwnedActiveFile(normalizeUserEmail(userEmail), fileId);
+    public DriveFileResponse starFile(AuthenticatedUser currentUser, Long fileId) {
+        DriveFile file = authorizationService.requireOwnedFile(currentUser, fileId);
         file.setStarred(true);
         return toResponse(fileRepository.saveAndFlush(file));
     }
 
     @Transactional
-    public DriveFileResponse unstarFile(String userEmail, Long fileId) {
-        DriveFile file = getOwnedActiveFile(normalizeUserEmail(userEmail), fileId);
+    public DriveFileResponse unstarFile(AuthenticatedUser currentUser, Long fileId) {
+        DriveFile file = authorizationService.requireOwnedFile(currentUser, fileId);
         file.setStarred(false);
         return toResponse(fileRepository.saveAndFlush(file));
     }
 
     @Transactional(readOnly = true)
-    public DriveFileDetailsResponse getFileDetails(String userEmail, Long fileId) {
-        DriveFile file = getReadableActiveFile(normalizeUserEmail(userEmail), fileId);
+    public DriveFileDetailsResponse getFileDetails(AuthenticatedUser currentUser, Long fileId) {
+        DriveFile file = authorizationService.requireReadableFile(currentUser, fileId);
         boolean shared = shareLinkRepository.hasActiveLink(
                 file.getId(),
                 file.getUserEmail(),
@@ -396,8 +393,8 @@ public class DriveService {
     }
 
     @Transactional(readOnly = true)
-    public DriveTrashResponse listTrash(String userEmail) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
+    public DriveTrashResponse listTrash(AuthenticatedUser currentUser) {
+        String normalizedEmail = currentUser.email();
         return new DriveTrashResponse(
                 folderRepository.findAllByUserEmailAndDeletedTrueOrderByUpdatedAtDesc(
                                 normalizedEmail)
@@ -412,9 +409,9 @@ public class DriveService {
     }
 
     @Transactional
-    public DriveFileResponse restoreFile(String userEmail, Long fileId) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
-        DriveFile file = getOwnedTrashedFile(normalizedEmail, fileId);
+    public DriveFileResponse restoreFile(AuthenticatedUser currentUser, Long fileId) {
+        String normalizedEmail = currentUser.email();
+        DriveFile file = authorizationService.requireOwnedTrashedFile(currentUser, fileId);
         if (file.getFolderId() != null
                 && folderRepository.findByIdAndUserEmailAndDeletedFalse(
                         file.getFolderId(), normalizedEmail).isEmpty()) {
@@ -425,15 +422,15 @@ public class DriveService {
     }
 
     @Transactional
-    public void permanentlyDeleteFile(String userEmail, Long fileId) {
-        DriveFile file = getOwnedTrashedFile(normalizeUserEmail(userEmail), fileId);
+    public void permanentlyDeleteFile(AuthenticatedUser currentUser, Long fileId) {
+        DriveFile file = authorizationService.requireOwnedTrashedFile(currentUser, fileId);
         deleteStoredFile(file);
     }
 
     @Transactional
-    public DriveFolderResponse restoreFolder(String userEmail, Long folderId) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
-        DriveFolder folder = getOwnedTrashedFolder(normalizedEmail, folderId);
+    public DriveFolderResponse restoreFolder(AuthenticatedUser currentUser, Long folderId) {
+        String normalizedEmail = currentUser.email();
+        DriveFolder folder = authorizationService.requireOwnedTrashedFolder(currentUser, folderId);
         if (folder.getParentFolderId() != null
                 && folderRepository.findByIdAndUserEmailAndDeletedFalse(
                         folder.getParentFolderId(), normalizedEmail).isEmpty()) {
@@ -444,81 +441,10 @@ public class DriveService {
     }
 
     @Transactional
-    public void permanentlyDeleteFolder(String userEmail, Long folderId) {
-        String normalizedEmail = normalizeUserEmail(userEmail);
-        DriveFolder folder = getOwnedTrashedFolder(normalizedEmail, folderId);
+    public void permanentlyDeleteFolder(AuthenticatedUser currentUser, Long folderId) {
+        String normalizedEmail = currentUser.email();
+        DriveFolder folder = authorizationService.requireOwnedTrashedFolder(currentUser, folderId);
         permanentlyDeleteFolderTree(normalizedEmail, folder);
-    }
-
-    private DriveFile getOwnedActiveFile(String userEmail, Long fileId) {
-        return fileRepository.findByIdAndUserEmailAndDeletedFalse(fileId, userEmail)
-                .orElseThrow(() -> new FileNotFoundException(fileId));
-    }
-
-    private DriveFile getReadableActiveFile(String userEmail, Long fileId) {
-        DriveFile ownedFile = fileRepository.findByIdAndUserEmailAndDeletedFalse(fileId, userEmail)
-                .orElse(null);
-        if (ownedFile != null) {
-            return ownedFile;
-        }
-        DriveFile file = fileRepository.findById(fileId)
-                .filter(item -> !item.isDeleted())
-                .orElseThrow(() -> new FileNotFoundException(fileId));
-        DrivePermission permission = permissionRepository
-                .findByFileIdAndSharedWithEmail(fileId, userEmail)
-                .filter(item -> item.getOwnerEmail().equals(file.getUserEmail()))
-                .orElseThrow(DriveAccessDeniedException::new);
-        if (permission.getRole() == DrivePermissionRole.VIEWER
-                || permission.getRole() == DrivePermissionRole.EDITOR
-                || permission.getRole() == DrivePermissionRole.OWNER) {
-            return file;
-        }
-        throw new DriveAccessDeniedException();
-    }
-
-    private DriveFile getEditableActiveFile(String userEmail, Long fileId) {
-        DriveFile file = getReadableActiveFile(userEmail, fileId);
-        if (file.getUserEmail().equals(userEmail)) {
-            return file;
-        }
-        DrivePermission permission = permissionRepository
-                .findByFileIdAndSharedWithEmail(fileId, userEmail)
-                .filter(item -> item.getOwnerEmail().equals(file.getUserEmail()))
-                .orElseThrow(DriveAccessDeniedException::new);
-        if (permission.getRole() == DrivePermissionRole.EDITOR
-                || permission.getRole() == DrivePermissionRole.OWNER) {
-            return file;
-        }
-        throw new DriveAccessDeniedException();
-    }
-
-    private DriveFile getOwnedTrashedFile(String userEmail, Long fileId) {
-        return fileRepository.findByIdAndUserEmailAndDeletedTrue(fileId, userEmail)
-                .orElseThrow(() -> new FileNotFoundException(fileId));
-    }
-
-    private void validateFolderOwnership(String userEmail, Long folderId) {
-        if (folderId != null
-                && folderRepository.findByIdAndUserEmailAndDeletedFalse(folderId, userEmail)
-                .isEmpty()) {
-            throw new FolderNotFoundException(folderId);
-        }
-    }
-
-    private DriveFolder getOwnedActiveFolder(String userEmail, Long folderId) {
-        if (folderId == null) {
-            throw new FolderNotFoundException(null);
-        }
-        return folderRepository.findByIdAndUserEmailAndDeletedFalse(folderId, userEmail)
-                .orElseThrow(() -> new FolderNotFoundException(folderId));
-    }
-
-    private DriveFolder getOwnedTrashedFolder(String userEmail, Long folderId) {
-        if (folderId == null) {
-            throw new FolderNotFoundException(null);
-        }
-        return folderRepository.findByIdAndUserEmailAndDeletedTrue(folderId, userEmail)
-                .orElseThrow(() -> new FolderNotFoundException(folderId));
     }
 
     private void markOpened(DriveFile file) {
@@ -526,12 +452,12 @@ public class DriveService {
         fileRepository.saveAndFlush(file);
     }
 
-    private List<DriveFolderResponse> buildFolderPath(String userEmail, Long folderId) {
+    private List<DriveFolderResponse> buildFolderPath(String ownerEmail, Long folderId) {
         List<DriveFolderResponse> path = new ArrayList<>();
         Long currentFolderId = folderId;
         while (currentFolderId != null) {
             DriveFolder folder = folderRepository
-                    .findByIdAndUserEmailAndDeletedFalse(currentFolderId, userEmail)
+                    .findByIdAndUserEmailAndDeletedFalse(currentFolderId, ownerEmail)
                     .orElse(null);
             if (folder == null) {
                 break;
@@ -551,47 +477,47 @@ public class DriveService {
         return contentType.split(";", 2)[0].trim();
     }
 
-    private void softDeleteFolderTree(String userEmail, DriveFolder folder) {
+    private void softDeleteFolderTree(String ownerEmail, DriveFolder folder) {
         List<DriveFile> childFiles = fileRepository.findAllByUserEmailAndFolderId(
-                userEmail, folder.getId());
+                ownerEmail, folder.getId());
         childFiles.forEach(file -> file.setDeleted(true));
         fileRepository.saveAll(childFiles);
 
         List<DriveFolder> childFolders = folderRepository.findAllByUserEmailAndParentFolderId(
-                userEmail, folder.getId());
-        childFolders.forEach(child -> softDeleteFolderTree(userEmail, child));
+                ownerEmail, folder.getId());
+        childFolders.forEach(child -> softDeleteFolderTree(ownerEmail, child));
 
         folder.setDeleted(true);
         folderRepository.save(folder);
     }
 
-    private void restoreFolderTree(String userEmail, DriveFolder folder) {
+    private void restoreFolderTree(String ownerEmail, DriveFolder folder) {
         folder.setDeleted(false);
         folderRepository.save(folder);
 
         List<DriveFolder> childFolders = folderRepository.findAllByUserEmailAndParentFolderId(
-                userEmail, folder.getId());
+                ownerEmail, folder.getId());
         childFolders.stream()
                 .filter(DriveFolder::isDeleted)
-                .forEach(child -> restoreFolderTree(userEmail, child));
+                .forEach(child -> restoreFolderTree(ownerEmail, child));
 
         List<DriveFile> childFiles = fileRepository.findAllByUserEmailAndFolderId(
-                userEmail, folder.getId());
+                ownerEmail, folder.getId());
         childFiles.stream()
                 .filter(DriveFile::isDeleted)
                 .forEach(file -> file.setDeleted(false));
         fileRepository.saveAll(childFiles);
     }
 
-    private void permanentlyDeleteFolderTree(String userEmail, DriveFolder folder) {
+    private void permanentlyDeleteFolderTree(String ownerEmail, DriveFolder folder) {
         List<DriveFolder> childFolders = new ArrayList<>(
-                folderRepository.findAllByUserEmailAndParentFolderId(userEmail, folder.getId()));
+                folderRepository.findAllByUserEmailAndParentFolderId(ownerEmail, folder.getId()));
         for (DriveFolder childFolder : childFolders) {
-            permanentlyDeleteFolderTree(userEmail, childFolder);
+            permanentlyDeleteFolderTree(ownerEmail, childFolder);
         }
 
         List<DriveFile> childFiles = new ArrayList<>(
-                fileRepository.findAllByUserEmailAndFolderId(userEmail, folder.getId()));
+                fileRepository.findAllByUserEmailAndFolderId(ownerEmail, folder.getId()));
         for (DriveFile childFile : childFiles) {
             deleteStoredFile(childFile);
         }
@@ -630,19 +556,6 @@ public class DriveService {
             throw new UploadSizeExceededException(
                     multipartFile.getSize(), driveProperties.getMaxUploadSizeBytes());
         }
-    }
-
-    private String normalizeUserEmail(String userEmail) {
-        if (userEmail == null || userEmail.isBlank()) {
-            throw new InvalidDriveRequestException("userEmail is required");
-        }
-        String normalized = userEmail.trim().toLowerCase(Locale.ROOT);
-        if (!SAFE_EMAIL.matcher(normalized).matches()
-                || normalized.contains("/")
-                || normalized.contains("\\")) {
-            throw new InvalidDriveRequestException("userEmail is invalid");
-        }
-        return normalized;
     }
 
     private String sanitizeFileName(String originalFilename) {
@@ -733,8 +646,8 @@ public class DriveService {
         return UUID.randomUUID() + "-" + filesystemSafeName;
     }
 
-    private String buildObjectKey(String userEmail, String storedFileName) {
-        return userEmail + "/" + storedFileName;
+    private String buildObjectKey(String ownerEmail, String storedFileName) {
+        return ownerEmail + "/" + storedFileName;
     }
 
     private void compensateFailedMetadataSave(String objectKey, RuntimeException originalException) {

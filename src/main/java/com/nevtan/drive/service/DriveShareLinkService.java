@@ -1,12 +1,12 @@
 package com.nevtan.drive.service;
 
+import com.nevtan.drive.auth.AuthenticatedUser;
 import com.nevtan.drive.config.DriveShareProperties;
 import com.nevtan.drive.dto.CreateShareLinkRequest;
 import com.nevtan.drive.dto.ShareLinkResponse;
 import com.nevtan.drive.dto.UpdateShareLinkRequest;
 import com.nevtan.drive.entity.DriveFile;
 import com.nevtan.drive.entity.DriveShareLink;
-import com.nevtan.drive.exception.FileNotFoundException;
 import com.nevtan.drive.exception.InvalidDriveRequestException;
 import com.nevtan.drive.exception.ShareLinkNotFoundException;
 import com.nevtan.drive.repository.DriveFileRepository;
@@ -21,8 +21,6 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
-import java.util.Locale;
-import java.util.regex.Pattern;
 
 @Service
 @RequiredArgsConstructor
@@ -31,24 +29,20 @@ public class DriveShareLinkService {
     private static final int TOKEN_BYTES = 32;
     private static final int MAX_TOKEN_GENERATION_ATTEMPTS = 5;
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
-    private static final Pattern SAFE_EMAIL = Pattern.compile(
-            "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$");
-
     private final DriveShareLinkRepository shareLinkRepository;
     private final DriveFileRepository fileRepository;
     private final CloudStorageService cloudStorageService;
     private final DriveShareProperties shareProperties;
+    private final DriveAuthorizationService authorizationService;
 
     @Transactional
     public ShareLinkResponse create(
-            String userEmail,
+            AuthenticatedUser currentUser,
             Long fileId,
             CreateShareLinkRequest request
     ) {
-        String ownerEmail = normalizeUserEmail(userEmail);
-        DriveFile file = fileRepository
-                .findByIdAndUserEmailAndDeletedFalse(fileId, ownerEmail)
-                .orElseThrow(() -> new FileNotFoundException(fileId));
+        String ownerEmail = currentUser.email();
+        DriveFile file = authorizationService.requireOwnedFile(currentUser, fileId);
 
         Instant expiresAt = request == null ? null : request.expiresAt();
         if (expiresAt != null && !expiresAt.isAfter(Instant.now())) {
@@ -66,10 +60,9 @@ public class DriveShareLinkService {
     }
 
     @Transactional(readOnly = true)
-    public List<ShareLinkResponse> listActiveForFile(String userEmail, Long fileId) {
-        String ownerEmail = normalizeUserEmail(userEmail);
-        fileRepository.findByIdAndUserEmailAndDeletedFalse(fileId, ownerEmail)
-                .orElseThrow(() -> new FileNotFoundException(fileId));
+    public List<ShareLinkResponse> listActiveForFile(AuthenticatedUser currentUser, Long fileId) {
+        String ownerEmail = currentUser.email();
+        authorizationService.requireOwnedFile(currentUser, fileId);
         Instant now = Instant.now();
         return shareLinkRepository
                 .findAllByFileIdAndOwnerEmailOrderByCreatedAtDesc(fileId, ownerEmail)
@@ -81,11 +74,11 @@ public class DriveShareLinkService {
     }
 
     @Transactional
-    public ShareLinkResponse update(String userEmail, Long shareId, UpdateShareLinkRequest request) {
+    public ShareLinkResponse update(AuthenticatedUser currentUser, Long shareId, UpdateShareLinkRequest request) {
         if (request == null) {
             throw new InvalidDriveRequestException("Share link update request is required");
         }
-        String ownerEmail = normalizeUserEmail(userEmail);
+        String ownerEmail = currentUser.email();
         DriveShareLink shareLink = shareLinkRepository
                 .findByIdAndOwnerEmail(shareId, ownerEmail)
                 .orElseThrow(ShareLinkNotFoundException::new);
@@ -125,8 +118,8 @@ public class DriveShareLinkService {
     }
 
     @Transactional
-    public void deactivate(String userEmail, Long shareId) {
-        String ownerEmail = normalizeUserEmail(userEmail);
+    public void deactivate(AuthenticatedUser currentUser, Long shareId) {
+        String ownerEmail = currentUser.email();
         DriveShareLink shareLink = shareLinkRepository
                 .findByIdAndOwnerEmail(shareId, ownerEmail)
                 .orElseThrow(ShareLinkNotFoundException::new);
@@ -164,17 +157,6 @@ public class DriveShareLinkService {
 
     private boolean isExpired(DriveShareLink shareLink, Instant now) {
         return shareLink.getExpiresAt() != null && !shareLink.getExpiresAt().isAfter(now);
-    }
-
-    private String normalizeUserEmail(String userEmail) {
-        if (userEmail == null || userEmail.isBlank()) {
-            throw new InvalidDriveRequestException("userEmail is required");
-        }
-        String normalized = userEmail.trim().toLowerCase(Locale.ROOT);
-        if (!SAFE_EMAIL.matcher(normalized).matches()) {
-            throw new InvalidDriveRequestException("userEmail is invalid");
-        }
-        return normalized;
     }
 
     public record SharedDownload(

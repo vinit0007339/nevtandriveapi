@@ -1,5 +1,6 @@
 package com.nevtan.drive.service;
 
+import com.nevtan.drive.auth.AuthenticatedUser;
 import com.nevtan.drive.config.DriveShareProperties;
 import com.nevtan.drive.dto.CreateShareLinkRequest;
 import com.nevtan.drive.dto.ShareLinkResponse;
@@ -10,6 +11,8 @@ import com.nevtan.drive.exception.FileNotFoundException;
 import com.nevtan.drive.exception.InvalidDriveRequestException;
 import com.nevtan.drive.exception.ShareLinkNotFoundException;
 import com.nevtan.drive.repository.DriveFileRepository;
+import com.nevtan.drive.repository.DriveFolderRepository;
+import com.nevtan.drive.repository.DrivePermissionRepository;
 import com.nevtan.drive.repository.DriveShareLinkRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,6 +38,7 @@ import static org.mockito.Mockito.when;
 class DriveShareLinkServiceTest {
 
     private static final String OWNER_EMAIL = "owner@example.com";
+    private static final AuthenticatedUser OWNER = new AuthenticatedUser(OWNER_EMAIL, OWNER_EMAIL);
 
     @Mock
     private DriveShareLinkRepository shareLinkRepository;
@@ -44,6 +48,12 @@ class DriveShareLinkServiceTest {
 
     @Mock
     private CloudStorageService cloudStorageService;
+
+    @Mock
+    private DrivePermissionRepository permissionRepository;
+
+    @Mock
+    private DriveFolderRepository folderRepository;
 
     private DriveShareLinkService service;
 
@@ -55,7 +65,8 @@ class DriveShareLinkServiceTest {
                 shareLinkRepository,
                 fileRepository,
                 cloudStorageService,
-                properties);
+                properties,
+                new DriveAuthorizationService(fileRepository, folderRepository, permissionRepository));
     }
 
     @Test
@@ -73,7 +84,7 @@ class DriveShareLinkServiceTest {
         });
 
         ShareLinkResponse response = service.create(
-                OWNER_EMAIL,
+                OWNER,
                 1L,
                 new CreateShareLinkRequest(expiry));
 
@@ -94,7 +105,7 @@ class DriveShareLinkServiceTest {
         when(fileRepository.findByIdAndUserEmailAndDeletedFalse(1L, OWNER_EMAIL))
                 .thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.create(OWNER_EMAIL, 1L, null))
+        assertThatThrownBy(() -> service.create(OWNER, 1L, null))
                 .isInstanceOf(FileNotFoundException.class);
 
         verify(shareLinkRepository, never()).save(any());
@@ -106,7 +117,7 @@ class DriveShareLinkServiceTest {
                 .thenReturn(Optional.of(file()));
 
         assertThatThrownBy(() -> service.create(
-                OWNER_EMAIL,
+                OWNER,
                 1L,
                 new CreateShareLinkRequest(Instant.now().minusSeconds(1))))
                 .isInstanceOf(InvalidDriveRequestException.class)
@@ -158,7 +169,7 @@ class DriveShareLinkServiceTest {
                 1L, OWNER_EMAIL))
                 .thenReturn(List.of(active, expired, inactive));
 
-        List<ShareLinkResponse> links = service.listActiveForFile(OWNER_EMAIL, 1L);
+        List<ShareLinkResponse> links = service.listActiveForFile(OWNER, 1L);
 
         assertThat(links).extracting(ShareLinkResponse::id).containsExactly(10L);
     }
@@ -168,7 +179,7 @@ class DriveShareLinkServiceTest {
         when(fileRepository.findByIdAndUserEmailAndDeletedFalse(1L, OWNER_EMAIL))
                 .thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.listActiveForFile(OWNER_EMAIL, 1L))
+        assertThatThrownBy(() -> service.listActiveForFile(OWNER, 1L))
                 .isInstanceOf(FileNotFoundException.class);
     }
 
@@ -181,7 +192,7 @@ class DriveShareLinkServiceTest {
         when(shareLinkRepository.save(link)).thenReturn(link);
 
         ShareLinkResponse response = service.update(
-                OWNER_EMAIL,
+                OWNER,
                 10L,
                 new UpdateShareLinkRequest(expiry, true));
 
@@ -197,7 +208,7 @@ class DriveShareLinkServiceTest {
                 .thenReturn(Optional.of(link));
 
         assertThatThrownBy(() -> service.update(
-                OWNER_EMAIL,
+                OWNER,
                 10L,
                 new UpdateShareLinkRequest(Instant.now().minusSeconds(1), null)))
                 .isInstanceOf(InvalidDriveRequestException.class)
@@ -211,7 +222,7 @@ class DriveShareLinkServiceTest {
                 .thenReturn(Optional.of(link));
         when(shareLinkRepository.save(link)).thenReturn(link);
 
-        service.deactivate(OWNER_EMAIL, 10L);
+        service.deactivate(OWNER, 10L);
 
         assertThat(link.isActive()).isFalse();
         verify(shareLinkRepository).save(link);
@@ -222,7 +233,7 @@ class DriveShareLinkServiceTest {
         when(shareLinkRepository.findByIdAndOwnerEmail(10L, OWNER_EMAIL))
                 .thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.deactivate(OWNER_EMAIL, 10L))
+        assertThatThrownBy(() -> service.deactivate(OWNER, 10L))
                 .isInstanceOf(ShareLinkNotFoundException.class);
     }
 
