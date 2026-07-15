@@ -34,7 +34,7 @@ public class GlobalExceptionHandler {
             UploadSizeExceededException.class
     })
     public ResponseEntity<ErrorResponse> handleStorageLimit(
-            StorageLimitExceededException exception,
+            RuntimeException exception,
             HttpServletRequest request
     ) {
         return response(HttpStatus.PAYLOAD_TOO_LARGE, exception.getMessage(), request);
