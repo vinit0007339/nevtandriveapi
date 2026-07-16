@@ -14,6 +14,8 @@ import com.nevtan.drive.repository.DrivePermissionRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.Optional;
+
 @Service
 @RequiredArgsConstructor
 public class DriveAuthorizationService {
@@ -34,6 +36,7 @@ public class DriveAuthorizationService {
         DrivePermission permission = permissionRepository
                 .findByFileIdAndSharedWithEmail(fileId, user.email())
                 .filter(item -> item.getOwnerEmail().equals(file.getUserEmail()))
+                .or(() -> findFolderPermission(user, file.getFolderId(), file.getUserEmail()))
                 .orElseThrow(DriveAccessDeniedException::new);
         if (permission.getRole() == DrivePermissionRole.VIEWER
                 || permission.getRole() == DrivePermissionRole.EDITOR
@@ -51,6 +54,7 @@ public class DriveAuthorizationService {
         DrivePermission permission = permissionRepository
                 .findByFileIdAndSharedWithEmail(fileId, user.email())
                 .filter(item -> item.getOwnerEmail().equals(file.getUserEmail()))
+                .or(() -> findFolderPermission(user, file.getFolderId(), file.getUserEmail()))
                 .orElseThrow(DriveAccessDeniedException::new);
         if (permission.getRole() == DrivePermissionRole.EDITOR
                 || permission.getRole() == DrivePermissionRole.OWNER) {
@@ -70,11 +74,36 @@ public class DriveAuthorizationService {
     }
 
     public DriveFolder requireReadableFolder(AuthenticatedUser user, Long folderId) {
-        return requireOwnedFolder(user, folderId);
+        DriveFolder ownedFolder = folderRepository.findByIdAndUserEmailAndDeletedFalse(folderId, user.email())
+                .orElse(null);
+        if (ownedFolder != null) {
+            return ownedFolder;
+        }
+        DriveFolder folder = folderRepository.findById(folderId)
+                .filter(item -> !item.isDeleted())
+                .orElseThrow(() -> new FolderNotFoundException(folderId));
+        DrivePermission permission = findFolderPermission(user, folder.getId(), folder.getUserEmail())
+                .orElseThrow(DriveAccessDeniedException::new);
+        if (permission.getRole() == DrivePermissionRole.VIEWER
+                || permission.getRole() == DrivePermissionRole.EDITOR
+                || permission.getRole() == DrivePermissionRole.OWNER) {
+            return folder;
+        }
+        throw new DriveAccessDeniedException();
     }
 
     public DriveFolder requireEditableFolder(AuthenticatedUser user, Long folderId) {
-        return requireOwnedFolder(user, folderId);
+        DriveFolder folder = requireReadableFolder(user, folderId);
+        if (folder.getUserEmail().equals(user.email())) {
+            return folder;
+        }
+        DrivePermission permission = findFolderPermission(user, folder.getId(), folder.getUserEmail())
+                .orElseThrow(DriveAccessDeniedException::new);
+        if (permission.getRole() == DrivePermissionRole.EDITOR
+                || permission.getRole() == DrivePermissionRole.OWNER) {
+            return folder;
+        }
+        throw new DriveAccessDeniedException();
     }
 
     public DriveFolder requireOwnedFolder(AuthenticatedUser user, Long folderId) {
@@ -97,5 +126,29 @@ public class DriveAuthorizationService {
         if (folderId != null) {
             requireEditableFolder(user, folderId);
         }
+    }
+
+    private Optional<DrivePermission> findFolderPermission(
+            AuthenticatedUser user,
+            Long folderId,
+            String ownerEmail
+    ) {
+        Long currentFolderId = folderId;
+        while (currentFolderId != null) {
+            DriveFolder folder = folderRepository.findById(currentFolderId)
+                    .filter(item -> !item.isDeleted())
+                    .orElse(null);
+            if (folder == null || !folder.getUserEmail().equals(ownerEmail)) {
+                return Optional.empty();
+            }
+            Optional<DrivePermission> permission = permissionRepository
+                    .findByFolderIdAndSharedWithEmail(folder.getId(), user.email())
+                    .filter(item -> item.getOwnerEmail().equals(ownerEmail));
+            if (permission.isPresent()) {
+                return permission;
+            }
+            currentFolderId = folder.getParentFolderId();
+        }
+        return Optional.empty();
     }
 }

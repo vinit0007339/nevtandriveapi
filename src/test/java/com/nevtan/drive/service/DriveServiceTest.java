@@ -6,12 +6,15 @@ import com.nevtan.drive.dto.CreateFolderRequest;
 import com.nevtan.drive.dto.DriveFileResponse;
 import com.nevtan.drive.dto.DriveFolderResponse;
 import com.nevtan.drive.dto.MoveFileRequest;
+import com.nevtan.drive.dto.MoveFolderRequest;
 import com.nevtan.drive.dto.RenameFileRequest;
 import com.nevtan.drive.dto.RenameFolderRequest;
 import com.nevtan.drive.dto.StorageUsageResponse;
 import com.nevtan.drive.dto.UploadFileResponse;
 import com.nevtan.drive.entity.DriveFile;
 import com.nevtan.drive.entity.DriveFolder;
+import com.nevtan.drive.entity.DrivePermission;
+import com.nevtan.drive.entity.DrivePermissionRole;
 import com.nevtan.drive.exception.FolderNotFoundException;
 import com.nevtan.drive.exception.FileNotFoundException;
 import com.nevtan.drive.exception.InvalidDriveRequestException;
@@ -48,6 +51,7 @@ import static org.mockito.Mockito.when;
 class DriveServiceTest {
 
     private static final String USER_EMAIL = "user@example.com";
+    private static final String OTHER_EMAIL = "other@example.com";
     private static final AuthenticatedUser USER = new AuthenticatedUser(USER_EMAIL, USER_EMAIL);
 
     @Mock
@@ -202,6 +206,48 @@ class DriveServiceTest {
     }
 
     @Test
+    void updatesEditableFileContentInPlace() throws Exception {
+        DriveFile file = file(74L);
+        MockMultipartFile multipartFile = new MockMultipartFile(
+                "file", "document.pdf", "text/plain", "edited content".getBytes());
+        when(fileRepository.findByIdAndUserEmailAndDeletedFalse(74L, USER_EMAIL))
+                .thenReturn(Optional.of(file));
+        when(fileRepository.sumStoredFileSizeByUserEmail(USER_EMAIL)).thenReturn(500L);
+        when(fileRepository.saveAndFlush(file)).thenReturn(file);
+
+        DriveFileResponse result = driveService.updateFileContent(USER, 74L, multipartFile);
+
+        verify(cloudStorageService).upload(
+                org.mockito.ArgumentMatchers.eq(file.getCloudObjectKey()),
+                any(),
+                org.mockito.ArgumentMatchers.eq(14L),
+                org.mockito.ArgumentMatchers.eq("text/plain"));
+        assertThat(file.getSizeBytes()).isEqualTo(14L);
+        assertThat(file.getContentType()).isEqualTo("text/plain");
+        assertThat(result.sizeBytes()).isEqualTo(14L);
+    }
+
+    @Test
+    void rejectsContentUpdateThatWouldExceedStorageLimit() throws Exception {
+        DriveFile file = file(75L);
+        MockMultipartFile multipartFile = new MockMultipartFile(
+                "file", "document.pdf", "application/pdf", new byte[200]);
+        DriveProperties properties = new DriveProperties();
+        driveService = createService(properties);
+        when(fileRepository.findByIdAndUserEmailAndDeletedFalse(75L, USER_EMAIL))
+                .thenReturn(Optional.of(file));
+        when(fileRepository.sumStoredFileSizeByUserEmail(USER_EMAIL))
+                .thenReturn(properties.getStorageLimitBytes() - 5);
+
+        assertThatThrownBy(() -> driveService.updateFileContent(USER, 75L, multipartFile))
+                .isInstanceOf(StorageLimitExceededException.class);
+
+        verify(cloudStorageService, never()).upload(
+                anyString(), any(), org.mockito.ArgumentMatchers.anyLong(), anyString());
+        verify(fileRepository, never()).saveAndFlush(file);
+    }
+
+    @Test
     void uploadsFileIntoOwnedFolder() {
         DriveFolder folder = folder(5L, "Documents", null);
         MockMultipartFile multipartFile = new MockMultipartFile(
@@ -221,6 +267,23 @@ class DriveServiceTest {
         UploadFileResponse result = driveService.upload(USER, 5L, multipartFile);
 
         assertThat(result.file().folderId()).isEqualTo(5L);
+    }
+
+    @Test
+    void rejectsUploadIntoSharedFolderOwnedByAnotherUser() throws Exception {
+        MockMultipartFile multipartFile = new MockMultipartFile(
+                "file",
+                "notes.txt",
+                "text/plain",
+                "content".getBytes());
+        when(folderRepository.findByIdAndUserEmailAndDeletedFalse(72L, USER_EMAIL))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> driveService.upload(USER, 72L, multipartFile))
+                .isInstanceOf(FolderNotFoundException.class);
+
+        verify(cloudStorageService, never()).upload(
+                anyString(), any(), org.mockito.ArgumentMatchers.anyLong(), anyString());
     }
 
     @Test
@@ -505,19 +568,41 @@ class DriveServiceTest {
     @Test
     void previewReturnsMetadataForUnsupportedOwnedFile() {
         DriveFile file = file(73L);
-        file.setContentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-        file.setFileName("proposal.docx");
-        file.setOriginalFileName("proposal.docx");
+        file.setContentType("application/zip");
+        file.setFileName("archive.zip");
+        file.setOriginalFileName("archive.zip");
         when(fileRepository.findByIdAndUserEmailAndDeletedFalse(73L, USER_EMAIL))
                 .thenReturn(Optional.of(file));
 
         DriveService.PreviewFile result = driveService.preview(USER, 73L);
 
         assertThat(result.previewSupported()).isFalse();
-        assertThat(result.metadata().fileName()).isEqualTo("proposal.docx");
+        assertThat(result.metadata().fileName()).isEqualTo("archive.zip");
         assertThat(result.metadata().downloadUrl()).isEqualTo("/api/drive/download/73");
         assertThat(file.getLastOpenedAt()).isNotNull();
         verify(cloudStorageService, never()).download(anyString());
+        verify(fileRepository).saveAndFlush(file);
+    }
+
+    @Test
+    void previewsModernOfficeFilesInline() {
+        DriveFile file = file(74L);
+        file.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        file.setFileName("budget.xlsx");
+        file.setOriginalFileName("budget.xlsx");
+        org.springframework.core.io.ByteArrayResource resource =
+                new org.springframework.core.io.ByteArrayResource("xlsx".getBytes());
+        when(fileRepository.findByIdAndUserEmailAndDeletedFalse(74L, USER_EMAIL))
+                .thenReturn(Optional.of(file));
+        when(cloudStorageService.download(file.getCloudObjectKey())).thenReturn(resource);
+
+        DriveService.PreviewFile result = driveService.preview(USER, 74L);
+
+        assertThat(result.previewSupported()).isTrue();
+        assertThat(result.resource()).isSameAs(resource);
+        assertThat(result.contentType()).isEqualTo(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        assertThat(result.metadata()).isNull();
         verify(fileRepository).saveAndFlush(file);
     }
 
@@ -612,6 +697,62 @@ class DriveServiceTest {
     }
 
     @Test
+    void listsFilesInsideSharedFolder() {
+        DriveFolder sharedFolder = folder(22L, "Shared", null);
+        sharedFolder.setUserEmail(OTHER_EMAIL);
+        DriveFile childFile = file(23L);
+        childFile.setUserEmail(OTHER_EMAIL);
+        childFile.setFolderId(22L);
+        DrivePermission permission = DrivePermission.builder()
+                .folderId(22L)
+                .ownerEmail(OTHER_EMAIL)
+                .sharedWithEmail(USER_EMAIL)
+                .role(DrivePermissionRole.VIEWER)
+                .build();
+        when(folderRepository.findByIdAndUserEmailAndDeletedFalse(22L, USER_EMAIL))
+                .thenReturn(Optional.empty());
+        when(folderRepository.findById(22L)).thenReturn(Optional.of(sharedFolder));
+        when(permissionRepository.findByFolderIdAndSharedWithEmail(22L, USER_EMAIL))
+                .thenReturn(Optional.of(permission));
+        when(fileRepository.findAllByUserEmailAndFolderIdAndDeletedFalse(
+                org.mockito.ArgumentMatchers.eq(OTHER_EMAIL),
+                org.mockito.ArgumentMatchers.eq(22L),
+                any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(childFile)));
+
+        Page<DriveFileResponse> result = driveService.listFiles(USER, 22L, 0, 20);
+
+        assertThat(result.getContent()).extracting(DriveFileResponse::id).containsExactly(23L);
+    }
+
+    @Test
+    void listsChildFoldersInsideSharedFolder() {
+        DriveFolder sharedFolder = folder(24L, "Shared", null);
+        sharedFolder.setUserEmail(OTHER_EMAIL);
+        DriveFolder childFolder = folder(25L, "Child", 24L);
+        childFolder.setUserEmail(OTHER_EMAIL);
+        DrivePermission permission = DrivePermission.builder()
+                .folderId(24L)
+                .ownerEmail(OTHER_EMAIL)
+                .sharedWithEmail(USER_EMAIL)
+                .role(DrivePermissionRole.VIEWER)
+                .build();
+        when(folderRepository.findByIdAndUserEmailAndDeletedFalse(24L, USER_EMAIL))
+                .thenReturn(Optional.empty());
+        when(folderRepository.findById(24L)).thenReturn(Optional.of(sharedFolder));
+        when(permissionRepository.findByFolderIdAndSharedWithEmail(24L, USER_EMAIL))
+                .thenReturn(Optional.of(permission));
+        when(folderRepository
+                .findAllByUserEmailAndParentFolderIdAndDeletedFalseOrderByNameAsc(
+                        OTHER_EMAIL, 24L))
+                .thenReturn(List.of(childFolder));
+
+        List<DriveFolderResponse> result = driveService.listFolders(USER, 24L);
+
+        assertThat(result).extracting(DriveFolderResponse::name).containsExactly("Child");
+    }
+
+    @Test
     void renamesOwnedFolder() {
         DriveFolder folder = folder(30L, "Old", null);
         when(folderRepository.findByIdAndUserEmailAndDeletedFalse(30L, USER_EMAIL))
@@ -624,6 +765,74 @@ class DriveServiceTest {
                 new RenameFolderRequest(" New "));
 
         assertThat(result.name()).isEqualTo("New");
+    }
+
+    @Test
+    void movesOwnedFolderToOwnedFolder() {
+        DriveFolder folder = folder(31L, "Source", null);
+        DriveFolder destination = folder(32L, "Destination", null);
+        when(folderRepository.findByIdAndUserEmailAndDeletedFalse(31L, USER_EMAIL))
+                .thenReturn(Optional.of(folder));
+        when(folderRepository.findByIdAndUserEmailAndDeletedFalse(32L, USER_EMAIL))
+                .thenReturn(Optional.of(destination));
+        when(folderRepository.save(folder)).thenReturn(folder);
+
+        DriveFolderResponse result = driveService.moveFolder(
+                USER,
+                31L,
+                new MoveFolderRequest(32L));
+
+        assertThat(result.parentFolderId()).isEqualTo(32L);
+    }
+
+    @Test
+    void movesOwnedFolderToRoot() {
+        DriveFolder folder = folder(33L, "Source", 32L);
+        when(folderRepository.findByIdAndUserEmailAndDeletedFalse(33L, USER_EMAIL))
+                .thenReturn(Optional.of(folder));
+        when(folderRepository.save(folder)).thenReturn(folder);
+
+        DriveFolderResponse result = driveService.moveFolder(
+                USER,
+                33L,
+                new MoveFolderRequest(null));
+
+        assertThat(result.parentFolderId()).isNull();
+    }
+
+    @Test
+    void rejectsMovingFolderIntoItself() {
+        DriveFolder folder = folder(34L, "Source", null);
+        when(folderRepository.findByIdAndUserEmailAndDeletedFalse(34L, USER_EMAIL))
+                .thenReturn(Optional.of(folder));
+
+        assertThatThrownBy(() -> driveService.moveFolder(
+                USER,
+                34L,
+                new MoveFolderRequest(34L)))
+                .isInstanceOf(InvalidDriveRequestException.class)
+                .hasMessage("Folder cannot be moved into itself");
+
+        verify(folderRepository, never()).save(folder);
+    }
+
+    @Test
+    void rejectsMovingFolderIntoDescendant() {
+        DriveFolder folder = folder(35L, "Source", null);
+        DriveFolder child = folder(36L, "Child", 35L);
+        when(folderRepository.findByIdAndUserEmailAndDeletedFalse(35L, USER_EMAIL))
+                .thenReturn(Optional.of(folder));
+        when(folderRepository.findByIdAndUserEmailAndDeletedFalse(36L, USER_EMAIL))
+                .thenReturn(Optional.of(child));
+
+        assertThatThrownBy(() -> driveService.moveFolder(
+                USER,
+                35L,
+                new MoveFolderRequest(36L)))
+                .isInstanceOf(InvalidDriveRequestException.class)
+                .hasMessage("Folder cannot be moved into one of its subfolders");
+
+        verify(folderRepository, never()).save(folder);
     }
 
     @Test

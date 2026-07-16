@@ -10,6 +10,8 @@ import com.nevtan.drive.dto.DriveFolderResponse;
 import com.nevtan.drive.dto.DriveTrashResponse;
 import com.nevtan.drive.dto.FilePreviewMetadataResponse;
 import com.nevtan.drive.dto.MoveFileRequest;
+import com.nevtan.drive.dto.MoveFolderRequest;
+import com.nevtan.drive.dto.PresentationSlidePreviewResponse;
 import com.nevtan.drive.dto.RenameFileRequest;
 import com.nevtan.drive.dto.RenameFolderRequest;
 import com.nevtan.drive.dto.StorageUsageResponse;
@@ -37,17 +39,28 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.text.Normalizer;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
+
+import org.apache.poi.xslf.usermodel.XMLSlideShow;
+import org.apache.poi.xslf.usermodel.XSLFSlide;
 
 @Service
 @RequiredArgsConstructor
@@ -56,11 +69,19 @@ public class DriveService {
 
     private static final int MAX_PAGE_SIZE = 100;
     private static final int MAX_FILE_NAME_LENGTH = 255;
+    private static final int MAX_PRESENTATION_PREVIEW_SLIDES = 40;
+    private static final int PRESENTATION_PREVIEW_WIDTH = 1280;
     private static final Pattern WINDOWS_RESERVED_NAME = Pattern.compile(
             "(?i)^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\\..*)?$");
     private static final Set<String> EXACT_PREVIEW_TYPES = Set.of(
             "application/pdf",
             "application/json",
+            "application/msword",
+            "application/vnd.ms-excel",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "text/plain",
             "text/csv");
 
@@ -80,7 +101,9 @@ public class DriveService {
     ) {
         String normalizedEmail = currentUser.email();
         validateUpload(multipartFile);
-        authorizationService.requireEditableFolderOrRoot(currentUser, folderId);
+        if (folderId != null) {
+            authorizationService.requireOwnedFolder(currentUser, folderId);
+        }
 
         long usedBytes = fileRepository.sumStoredFileSizeByUserEmail(normalizedEmail);
         long uploadSize = multipartFile.getSize();
@@ -128,6 +151,45 @@ public class DriveService {
         }
     }
 
+    @Transactional(isolation = Isolation.SERIALIZABLE)
+    public DriveFileResponse updateFileContent(
+            AuthenticatedUser currentUser,
+            Long fileId,
+            MultipartFile multipartFile
+    ) {
+        DriveFile file = authorizationService.requireEditableFile(currentUser, fileId);
+        validateUpload(multipartFile);
+
+        long usedBytes = fileRepository.sumStoredFileSizeByUserEmail(file.getUserEmail());
+        long replacementSize = multipartFile.getSize();
+        long projectedUsedBytes = usedBytes - file.getSizeBytes() + replacementSize;
+        if (projectedUsedBytes > driveProperties.getStorageLimitBytes()) {
+            throw new StorageLimitExceededException(
+                    usedBytes - file.getSizeBytes(),
+                    replacementSize,
+                    driveProperties.getStorageLimitBytes());
+        }
+
+        String contentType = preserveContentType(multipartFile.getContentType());
+        try (InputStream inputStream = multipartFile.getInputStream()) {
+            cloudStorageService.upload(
+                    file.getCloudObjectKey(),
+                    inputStream,
+                    replacementSize,
+                    contentType);
+        } catch (IOException exception) {
+            throw new CloudStorageException("Could not read or update the file", exception);
+        }
+
+        file.setContentType(contentType);
+        file.setSizeBytes(replacementSize);
+        DriveFileResponse response = toResponse(fileRepository.saveAndFlush(file));
+        log.info("event=drive_file_content_updated fileId={} sizeBytes={} storageProvider={}",
+                response.id(), response.sizeBytes(),
+                cloudStorageService.getClass().getSimpleName());
+        return response;
+    }
+
     @Transactional(readOnly = true)
     public Page<DriveFileResponse> listFiles(
             AuthenticatedUser currentUser,
@@ -136,13 +198,17 @@ public class DriveService {
             int size
     ) {
         String normalizedEmail = currentUser.email();
-        authorizationService.requireEditableFolderOrRoot(currentUser, folderId);
+        String ownerEmail = normalizedEmail;
+        if (folderId != null) {
+            DriveFolder folder = authorizationService.requireReadableFolder(currentUser, folderId);
+            ownerEmail = folder.getUserEmail();
+        }
         Pageable pageable = filePageable(page, size);
         Page<DriveFile> files = folderId == null
                 ? fileRepository.findAllByUserEmailAndFolderIdIsNullAndDeletedFalse(
-                        normalizedEmail, pageable)
+                        ownerEmail, pageable)
                 : fileRepository.findAllByUserEmailAndFolderIdAndDeletedFalse(
-                        normalizedEmail, folderId, pageable);
+                        ownerEmail, folderId, pageable);
         return files.map(this::toResponse);
     }
 
@@ -251,15 +317,19 @@ public class DriveService {
     @Transactional(readOnly = true)
     public List<DriveFolderResponse> listFolders(AuthenticatedUser currentUser, Long parentFolderId) {
         String normalizedEmail = currentUser.email();
-        authorizationService.requireEditableFolderOrRoot(currentUser, parentFolderId);
+        String ownerEmail = normalizedEmail;
+        if (parentFolderId != null) {
+            DriveFolder parentFolder = authorizationService.requireReadableFolder(currentUser, parentFolderId);
+            ownerEmail = parentFolder.getUserEmail();
+        }
 
         List<DriveFolder> folders = parentFolderId == null
                 ? folderRepository
                 .findAllByUserEmailAndParentFolderIdIsNullAndDeletedFalseOrderByNameAsc(
-                        normalizedEmail)
+                        ownerEmail)
                 : folderRepository
                 .findAllByUserEmailAndParentFolderIdAndDeletedFalseOrderByNameAsc(
-                        normalizedEmail, parentFolderId);
+                        ownerEmail, parentFolderId);
         return folders.stream().map(this::toFolderResponse).toList();
     }
 
@@ -275,6 +345,31 @@ public class DriveService {
         }
         DriveFolder folder = authorizationService.requireOwnedFolder(currentUser, folderId);
         folder.setName(normalizeFolderName(request.name()));
+        return toFolderResponse(folderRepository.save(folder));
+    }
+
+    @Transactional
+    public DriveFolderResponse moveFolder(
+            AuthenticatedUser currentUser,
+            Long folderId,
+            MoveFolderRequest request
+    ) {
+        String normalizedEmail = currentUser.email();
+        if (request == null) {
+            throw new InvalidDriveRequestException("Folder move request is required");
+        }
+
+        DriveFolder folder = authorizationService.requireOwnedFolder(currentUser, folderId);
+        Long destinationFolderId = request.parentFolderId();
+        if (folderId.equals(destinationFolderId)) {
+            throw new InvalidDriveRequestException("Folder cannot be moved into itself");
+        }
+        authorizationService.requireEditableFolderOrRoot(currentUser, destinationFolderId);
+        if (isFolderDescendantOrSelf(normalizedEmail, folderId, destinationFolderId)) {
+            throw new InvalidDriveRequestException("Folder cannot be moved into one of its subfolders");
+        }
+
+        folder.setParentFolderId(destinationFolderId);
         return toFolderResponse(folderRepository.save(folder));
     }
 
@@ -333,6 +428,71 @@ public class DriveService {
                 file.getOriginalFileName(),
                 file.getContentType(),
                 file.getSizeBytes());
+    }
+
+    @Transactional
+    public PresentationSlidePreviewResponse previewPresentationSlides(
+            AuthenticatedUser currentUser,
+            Long fileId
+    ) {
+        DriveFile file = authorizationService.requireReadableFile(currentUser, fileId);
+        markOpened(file);
+        if (!isModernPowerPoint(file)) {
+            throw new InvalidDriveRequestException("Only PPTX files can be rendered as slides");
+        }
+
+        Resource resource = cloudStorageService.download(file.getCloudObjectKey());
+        try (InputStream inputStream = resource.getInputStream();
+             XMLSlideShow slideShow = new XMLSlideShow(inputStream)) {
+            Dimension pageSize = slideShow.getPageSize();
+            double scale = PRESENTATION_PREVIEW_WIDTH / pageSize.getWidth();
+            int width = PRESENTATION_PREVIEW_WIDTH;
+            int height = Math.max(1, (int) Math.round(pageSize.getHeight() * scale));
+            List<PresentationSlidePreviewResponse.SlideImage> slides = new ArrayList<>();
+
+            List<XSLFSlide> sourceSlides = slideShow.getSlides();
+            int slideLimit = Math.min(sourceSlides.size(), MAX_PRESENTATION_PREVIEW_SLIDES);
+            for (int index = 0; index < slideLimit; index += 1) {
+                XSLFSlide slide = sourceSlides.get(index);
+                BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D graphics = image.createGraphics();
+                try {
+                    graphics.setRenderingHint(
+                            RenderingHints.KEY_ANTIALIASING,
+                            RenderingHints.VALUE_ANTIALIAS_ON);
+                    graphics.setRenderingHint(
+                            RenderingHints.KEY_TEXT_ANTIALIASING,
+                            RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+                    graphics.setRenderingHint(
+                            RenderingHints.KEY_RENDERING,
+                            RenderingHints.VALUE_RENDER_QUALITY);
+                    graphics.scale(scale, scale);
+                    graphics.setPaint(Color.WHITE);
+                    graphics.fillRect(0, 0, pageSize.width, pageSize.height);
+                    slide.draw(graphics);
+                } finally {
+                    graphics.dispose();
+                }
+
+                ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", outputStream);
+                String imageDataUrl = "data:image/png;base64,"
+                        + Base64.getEncoder().encodeToString(outputStream.toByteArray());
+                slides.add(new PresentationSlidePreviewResponse.SlideImage(
+                        index + 1,
+                        width,
+                        height,
+                        imageDataUrl));
+            }
+
+            return new PresentationSlidePreviewResponse(
+                    file.getId(),
+                    file.getFileName(),
+                    sourceSlides.size(),
+                    slides);
+        } catch (IOException | RuntimeException exception) {
+            throw new CloudStorageException("Could not render PowerPoint preview", exception);
+        }
     }
 
     @Transactional
@@ -477,6 +637,24 @@ public class DriveService {
         return contentType.split(";", 2)[0].trim();
     }
 
+    private boolean isFolderDescendantOrSelf(
+            String ownerEmail,
+            Long folderId,
+            Long possibleDescendantId
+    ) {
+        Long currentFolderId = possibleDescendantId;
+        while (currentFolderId != null) {
+            if (folderId.equals(currentFolderId)) {
+                return true;
+            }
+            DriveFolder folder = folderRepository
+                    .findByIdAndUserEmailAndDeletedFalse(currentFolderId, ownerEmail)
+                    .orElse(null);
+            currentFolderId = folder == null ? null : folder.getParentFolderId();
+        }
+        return false;
+    }
+
     private void softDeleteFolderTree(String ownerEmail, DriveFolder folder) {
         List<DriveFile> childFiles = fileRepository.findAllByUserEmailAndFolderId(
                 ownerEmail, folder.getId());
@@ -612,6 +790,18 @@ public class DriveService {
                 || normalized.startsWith("audio/")
                 || normalized.startsWith("video/")
                 || EXACT_PREVIEW_TYPES.contains(normalized);
+    }
+
+    private boolean isModernPowerPoint(DriveFile file) {
+        String contentType = file.getContentType() == null
+                ? ""
+                : file.getContentType().toLowerCase(Locale.ROOT).split(";", 2)[0].trim();
+        String fileName = file.getFileName() == null
+                ? ""
+                : file.getFileName().toLowerCase(Locale.ROOT);
+        return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                .equals(contentType)
+                || fileName.endsWith(".pptx");
     }
 
     private String truncateFileName(String fileName) {

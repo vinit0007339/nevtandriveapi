@@ -23,11 +23,15 @@ import java.time.Instant;
 @Entity
 @Table(name = "drive_permissions", indexes = {
         @Index(name = "idx_drive_permission_file", columnList = "file_id"),
+        @Index(name = "idx_drive_permission_folder", columnList = "folder_id"),
         @Index(name = "idx_drive_permission_shared_with", columnList = "shared_with_email")
 }, uniqueConstraints = {
         @UniqueConstraint(
                 name = "uk_drive_permission_file_shared_with",
-                columnNames = {"file_id", "shared_with_email"})
+                columnNames = {"file_id", "shared_with_email"}),
+        @UniqueConstraint(
+                name = "uk_drive_permission_folder_shared_with",
+                columnNames = {"folder_id", "shared_with_email"})
 })
 @Getter
 @Setter
@@ -40,8 +44,11 @@ public class DrivePermission {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "file_id", nullable = false)
+    @Column(name = "file_id")
     private Long fileId;
+
+    @Column(name = "folder_id")
+    private Long folderId;
 
     @Column(name = "owner_email", nullable = false, length = 320)
     private String ownerEmail;

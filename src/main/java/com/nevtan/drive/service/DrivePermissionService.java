@@ -2,14 +2,17 @@ package com.nevtan.drive.service;
 
 import com.nevtan.drive.auth.AuthenticatedUser;
 import com.nevtan.drive.dto.CreateDrivePermissionRequest;
+import com.nevtan.drive.dto.DriveSharedWithMeResponse;
 import com.nevtan.drive.dto.DrivePermissionResponse;
 import com.nevtan.drive.dto.SharedDriveFileResponse;
 import com.nevtan.drive.entity.DriveFile;
+import com.nevtan.drive.entity.DriveFolder;
 import com.nevtan.drive.entity.DrivePermission;
 import com.nevtan.drive.entity.DrivePermissionRole;
 import com.nevtan.drive.exception.DriveAccessDeniedException;
 import com.nevtan.drive.exception.InvalidDriveRequestException;
 import com.nevtan.drive.repository.DriveFileRepository;
+import com.nevtan.drive.repository.DriveFolderRepository;
 import com.nevtan.drive.repository.DrivePermissionRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -30,6 +33,7 @@ public class DrivePermissionService {
 
     private final DrivePermissionRepository permissionRepository;
     private final DriveFileRepository fileRepository;
+    private final DriveFolderRepository folderRepository;
     private final DriveAuthorizationService authorizationService;
 
     @Transactional
@@ -66,6 +70,40 @@ public class DrivePermissionService {
         return toResponse(permissionRepository.save(permission));
     }
 
+    @Transactional
+    public DrivePermissionResponse shareFolder(
+            AuthenticatedUser currentUser,
+            Long folderId,
+            CreateDrivePermissionRequest request
+    ) {
+        String ownerEmail = currentUser.email();
+        if (request == null) {
+            throw new InvalidDriveRequestException("Permission request is required");
+        }
+        DriveFolder folder = authorizationService.requireOwnedFolder(currentUser, folderId);
+        String sharedWithEmail = normalizeRecipientEmail(request.sharedWithEmail());
+        if (ownerEmail.equals(sharedWithEmail)) {
+            throw new InvalidDriveRequestException("Use the owner role for the folder owner");
+        }
+        DrivePermissionRole role = parseRole(request.role());
+        if (role == DrivePermissionRole.OWNER) {
+            throw new InvalidDriveRequestException("Owner permissions are reserved for folder owners");
+        }
+
+        DrivePermission permission = permissionRepository
+                .findByFolderIdAndSharedWithEmail(folder.getId(), sharedWithEmail)
+                .orElseGet(() -> DrivePermission.builder()
+                        .folderId(folder.getId())
+                        .ownerEmail(ownerEmail)
+                        .sharedWithEmail(sharedWithEmail)
+                        .build());
+        if (!ownerEmail.equals(permission.getOwnerEmail())) {
+            throw new DriveAccessDeniedException();
+        }
+        permission.setRole(role);
+        return toResponse(permissionRepository.save(permission));
+    }
+
     @Transactional(readOnly = true)
     public List<DrivePermissionResponse> listForFile(AuthenticatedUser currentUser, Long fileId) {
         String ownerEmail = currentUser.email();
@@ -82,6 +120,22 @@ public class DrivePermissionService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public List<DrivePermissionResponse> listForFolder(AuthenticatedUser currentUser, Long folderId) {
+        String ownerEmail = currentUser.email();
+        authorizationService.requireOwnedFolder(currentUser, folderId);
+        List<DrivePermissionResponse> sharedPermissions = permissionRepository
+                .findAllByFolderIdAndOwnerEmailOrderByCreatedAtDesc(folderId, ownerEmail)
+                .stream()
+                .map(this::toResponse)
+                .toList();
+        return java.util.stream.Stream
+                .concat(
+                        java.util.stream.Stream.of(ownerPermission(null, ownerEmail)),
+                        sharedPermissions.stream())
+                .toList();
+    }
+
     @Transactional
     public void removeAccess(AuthenticatedUser currentUser, Long permissionId) {
         String ownerEmail = currentUser.email();
@@ -92,10 +146,12 @@ public class DrivePermissionService {
     }
 
     @Transactional(readOnly = true)
-    public List<SharedDriveFileResponse> listSharedWithMe(AuthenticatedUser currentUser) {
+    public DriveSharedWithMeResponse listSharedWithMe(AuthenticatedUser currentUser) {
         String sharedWithEmail = currentUser.email();
-        return permissionRepository.findAllBySharedWithEmailOrderByUpdatedAtDesc(sharedWithEmail)
+        List<SharedDriveFileResponse> files = permissionRepository
+                .findAllBySharedWithEmailOrderByUpdatedAtDesc(sharedWithEmail)
                 .stream()
+                .filter(permission -> permission.getFileId() != null)
                 .map(permission -> fileRepository
                         .findByIdAndUserEmailAndDeletedFalse(
                                 permission.getFileId(),
@@ -107,6 +163,24 @@ public class DrivePermissionService {
                         SharedDriveFileResponse::updatedAt,
                         Comparator.nullsLast(Comparator.reverseOrder())))
                 .toList();
+
+        List<com.nevtan.drive.dto.SharedDriveFolderResponse> folders = permissionRepository
+                .findAllBySharedWithEmailOrderByUpdatedAtDesc(sharedWithEmail)
+                .stream()
+                .filter(permission -> permission.getFolderId() != null)
+                .map(permission -> folderRepository
+                        .findByIdAndUserEmailAndDeletedFalse(
+                                permission.getFolderId(),
+                                permission.getOwnerEmail())
+                        .map(folder -> toSharedFolderResponse(folder, permission))
+                        .orElse(null))
+                .filter(response -> response != null)
+                .sorted(Comparator.comparing(
+                        com.nevtan.drive.dto.SharedDriveFolderResponse::updatedAt,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
+
+        return new DriveSharedWithMeResponse(files, folders);
     }
 
     public DrivePermissionRole parseRole(String value) {
@@ -154,6 +228,22 @@ public class DrivePermissionService {
                 permission.getRole().name().toLowerCase(Locale.ROOT),
                 permission.getCreatedAt(),
                 permission.getUpdatedAt());
+    }
+
+    private com.nevtan.drive.dto.SharedDriveFolderResponse toSharedFolderResponse(
+            DriveFolder folder,
+            DrivePermission permission
+    ) {
+        return new com.nevtan.drive.dto.SharedDriveFolderResponse(
+                folder.getId(),
+                folder.getName(),
+                folder.getParentFolderId(),
+                folder.getCreatedAt(),
+                folder.getUpdatedAt(),
+                permission.getId(),
+                permission.getOwnerEmail(),
+                permission.getSharedWithEmail(),
+                permission.getRole().name().toLowerCase(Locale.ROOT));
     }
 
     private SharedDriveFileResponse toSharedFileResponse(

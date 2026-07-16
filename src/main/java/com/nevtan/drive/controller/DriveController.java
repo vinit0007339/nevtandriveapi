@@ -8,8 +8,11 @@ import com.nevtan.drive.dto.DriveFileDetailsResponse;
 import com.nevtan.drive.dto.DriveFileResponse;
 import com.nevtan.drive.dto.DriveFolderResponse;
 import com.nevtan.drive.dto.DrivePermissionResponse;
+import com.nevtan.drive.dto.DriveSharedWithMeResponse;
 import com.nevtan.drive.dto.DriveTrashResponse;
 import com.nevtan.drive.dto.MoveFileRequest;
+import com.nevtan.drive.dto.MoveFolderRequest;
+import com.nevtan.drive.dto.PresentationSlidePreviewResponse;
 import com.nevtan.drive.dto.RenameFileRequest;
 import com.nevtan.drive.dto.RenameFolderRequest;
 import com.nevtan.drive.dto.ShareLinkResponse;
@@ -33,6 +36,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -94,6 +98,14 @@ public class DriveController {
         return driveService.renameFile(currentUserService.currentUser(), fileId, request);
     }
 
+    @PutMapping(value = "/files/{fileId}/content", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public DriveFileResponse updateFileContent(
+            @PathVariable Long fileId,
+            @RequestParam("file") MultipartFile file
+    ) {
+        return driveService.updateFileContent(currentUserService.currentUser(), fileId, file);
+    }
+
     @PatchMapping("/files/{fileId}/move")
     public DriveFileResponse moveFile(
             @PathVariable Long fileId,
@@ -150,11 +162,30 @@ public class DriveController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
+    @PostMapping("/permissions/folder/{folderId}")
+    public ResponseEntity<DrivePermissionResponse> shareFolderWithUser(
+            @PathVariable Long folderId,
+            @RequestBody CreateDrivePermissionRequest request
+    ) {
+        DrivePermissionResponse response = permissionService.shareFolder(
+                currentUserService.currentUser(),
+                folderId,
+                request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
     @GetMapping("/permissions/{fileId}")
     public List<DrivePermissionResponse> listPermissionsForFile(
             @PathVariable Long fileId
     ) {
         return permissionService.listForFile(currentUserService.currentUser(), fileId);
+    }
+
+    @GetMapping("/permissions/folder/{folderId}")
+    public List<DrivePermissionResponse> listPermissionsForFolder(
+            @PathVariable Long folderId
+    ) {
+        return permissionService.listForFolder(currentUserService.currentUser(), folderId);
     }
 
     @DeleteMapping("/permissions/{permissionId}")
@@ -166,7 +197,7 @@ public class DriveController {
     }
 
     @GetMapping("/shared-with-me")
-    public List<SharedDriveFileResponse> sharedWithMe(    ) {
+    public DriveSharedWithMeResponse sharedWithMe(    ) {
         return permissionService.listSharedWithMe(currentUserService.currentUser());
     }
 
@@ -224,6 +255,14 @@ public class DriveController {
             @RequestBody RenameFolderRequest request
     ) {
         return driveService.renameFolder(currentUserService.currentUser(), folderId, request);
+    }
+
+    @PatchMapping("/folders/{folderId}/move")
+    public DriveFolderResponse moveFolder(
+            @PathVariable Long folderId,
+            @RequestBody MoveFolderRequest request
+    ) {
+        return driveService.moveFolder(currentUserService.currentUser(), folderId, request);
     }
 
     @DeleteMapping("/folders/{folderId}")
@@ -286,6 +325,13 @@ public class DriveController {
                 previewFile.originalFileName(),
                 previewFile.contentType(),
                 previewFile.sizeBytes());
+    }
+
+    @GetMapping("/preview/{fileId}/slides")
+    public PresentationSlidePreviewResponse previewPresentationSlides(
+            @PathVariable Long fileId
+    ) {
+        return driveService.previewPresentationSlides(currentUserService.currentUser(), fileId);
     }
 
     @DeleteMapping("/files/{fileId}")
