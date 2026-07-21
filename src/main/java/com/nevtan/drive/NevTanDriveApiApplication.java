@@ -6,6 +6,8 @@ import com.nevtan.drive.config.LocalDriveStorageProperties;
 import com.nevtan.drive.config.DriveShareProperties;
 import com.nevtan.drive.config.DriveProperties;
 import com.nevtan.drive.config.DriveCorsProperties;
+import com.nevtan.drive.service.CloudStorageService;
+import com.nevtan.drive.service.LocalMockCloudStorageService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -35,11 +37,29 @@ public class NevTanDriveApiApplication {
         SpringApplication.run(NevTanDriveApiApplication.class, args);
     }
 
+    /**
+     * Logs the effective runtime configuration at startup. The storage provider
+     * is included because a misconfigured deployment silently falls back to
+     * container-local disk, where uploaded files are lost on restart.
+     *
+     * <p>Never log credentials here.
+     */
     @Bean
-    ApplicationRunner startupDiagnostics(Environment environment) {
-        return (ApplicationArguments args) -> log.info(
-                "NevTan Drive API started with profiles={} server.port={}",
-                Arrays.toString(environment.getActiveProfiles()),
-                environment.getProperty("server.port"));
+    ApplicationRunner startupDiagnostics(
+            Environment environment,
+            CloudStorageService cloudStorageService
+    ) {
+        return (ApplicationArguments args) -> {
+            log.info("NevTan Drive API started with profiles={} server.port={}",
+                    Arrays.toString(environment.getActiveProfiles()),
+                    environment.getProperty("server.port"));
+            log.info("event=drive_storage_provider provider={} corsAllowedOrigins={}",
+                    cloudStorageService.getClass().getSimpleName(),
+                    environment.getProperty("drive.cors.allowed-origin-patterns"));
+            if (cloudStorageService instanceof LocalMockCloudStorageService) {
+                log.warn("Uploads are being written to container-local disk and will be lost on "
+                        + "restart. Set nevtan.cloud.provider=s3 to use object storage.");
+            }
+        };
     }
 }
