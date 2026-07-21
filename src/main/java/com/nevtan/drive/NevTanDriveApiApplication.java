@@ -5,6 +5,7 @@ import com.nevtan.drive.config.ObjectStorageProperties;
 import com.nevtan.drive.config.LocalDriveStorageProperties;
 import com.nevtan.drive.config.DriveShareProperties;
 import com.nevtan.drive.config.DriveProperties;
+import com.nevtan.drive.config.DriveCorsProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -23,7 +24,8 @@ import java.util.Arrays;
         ObjectStorageProperties.class,
         LocalDriveStorageProperties.class,
         DriveShareProperties.class,
-        DriveProperties.class
+        DriveProperties.class,
+        DriveCorsProperties.class
 })
 public class NevTanDriveApiApplication {
 
