@@ -1,6 +1,7 @@
 package com.nevtan.drive;
 
 import com.nevtan.drive.config.NevTanCloudProperties;
+import com.nevtan.drive.config.ObjectStorageProperties;
 import com.nevtan.drive.config.LocalDriveStorageProperties;
 import com.nevtan.drive.config.DriveShareProperties;
 import com.nevtan.drive.config.DriveProperties;
@@ -19,6 +20,7 @@ import java.util.Arrays;
 @SpringBootApplication
 @EnableConfigurationProperties({
         NevTanCloudProperties.class,
+        ObjectStorageProperties.class,
         LocalDriveStorageProperties.class,
         DriveShareProperties.class,
         DriveProperties.class

@@ -4,7 +4,7 @@ import com.nevtan.drive.config.LocalDriveStorageProperties;
 import com.nevtan.drive.exception.CloudStorageException;
 import com.nevtan.drive.exception.StorageObjectNotFoundException;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.stereotype.Service;
@@ -17,11 +17,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
 @Service
-@ConditionalOnProperty(
-        prefix = "nevtan.cloud",
-        name = "enabled",
-        havingValue = "false",
-        matchIfMissing = true)
+@ConditionalOnExpression(
+        "'${nevtan.cloud.enabled:false}' != 'true' and '${nevtan.cloud.provider:local}' != 's3'")
 @RequiredArgsConstructor
 public class LocalMockCloudStorageService implements CloudStorageService {
 

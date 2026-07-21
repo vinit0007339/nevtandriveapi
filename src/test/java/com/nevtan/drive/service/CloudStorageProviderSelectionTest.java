@@ -2,6 +2,7 @@ package com.nevtan.drive.service;
 
 import com.nevtan.drive.config.LocalDriveStorageProperties;
 import com.nevtan.drive.config.NevTanCloudProperties;
+import com.nevtan.drive.config.ObjectStorageProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -60,14 +61,53 @@ class CloudStorageProviderSelectionTest {
                 });
     }
 
+    @Test
+    void usesObjectStorageWhenProviderIsS3() {
+        contextRunner
+                .withPropertyValues(
+                        "nevtan.cloud.enabled=true",
+                        "nevtan.cloud.provider=s3",
+                        "nevtan.cloud.s3.endpoint=https://nyc3.digitaloceanspaces.test",
+                        "nevtan.cloud.s3.region=nyc3",
+                        "nevtan.cloud.s3.bucket=nevtan-cloud",
+                        "nevtan.cloud.s3.access-key=test-access-key",
+                        "nevtan.cloud.s3.secret-key=test-secret-key")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(CloudStorageService.class);
+                    assertThat(context.getBean(CloudStorageService.class))
+                            .isInstanceOf(ObjectStorageService.class);
+                });
+    }
+
+    @Test
+    void failsFastWhenObjectStorageIsSelectedWithoutRequiredProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "nevtan.cloud.enabled=true",
+                        "nevtan.cloud.provider=s3",
+                        "nevtan.cloud.s3.access-key=test-access-key",
+                        "nevtan.cloud.s3.secret-key=test-secret-key")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasRootCauseInstanceOf(IllegalStateException.class)
+                            .rootCause()
+                            .hasMessageContaining("nevtan.cloud.s3.endpoint")
+                            .hasMessageContaining("nevtan.cloud.s3.bucket")
+                            .hasMessageNotContaining("test-secret-key");
+                });
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableConfigurationProperties({
             NevTanCloudProperties.class,
+            ObjectStorageProperties.class,
             LocalDriveStorageProperties.class
     })
     @Import({
             LocalMockCloudStorageService.class,
-            NevTanCloudStorageService.class
+            NevTanCloudStorageService.class,
+            ObjectStorageService.class
     })
     static class StorageTestConfiguration {
 

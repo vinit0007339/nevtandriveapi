@@ -2,7 +2,7 @@ package com.nevtan.drive.service;
 
 import com.nevtan.drive.config.NevTanCloudProperties;
 import com.nevtan.drive.exception.CloudStorageException;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -29,10 +29,8 @@ import java.net.URI;
  * string representations.
  */
 @Service
-@ConditionalOnProperty(
-        prefix = "nevtan.cloud",
-        name = "enabled",
-        havingValue = "true")
+@ConditionalOnExpression(
+        "'${nevtan.cloud.enabled:false}' == 'true' and '${nevtan.cloud.provider:nevtan}' != 's3'")
 public class NevTanCloudStorageService implements CloudStorageService {
 
     private final NevTanCloudProperties properties;
