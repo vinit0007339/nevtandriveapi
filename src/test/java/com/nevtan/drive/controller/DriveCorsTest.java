@@ -16,7 +16,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties =
-        "drive.cors.allowed-origin-patterns=https://*.apps.nevtan.com,http://localhost:5173")
+        "drive.cors.allowed-origin-patterns="
+                + "https://*.apps.nevtan.com,https://drive.nevtan.com,http://localhost:5173")
 class DriveCorsTest {
 
     private static final String DEPLOYED_UI =
