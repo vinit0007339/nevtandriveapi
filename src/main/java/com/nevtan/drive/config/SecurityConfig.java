@@ -1,8 +1,7 @@
 package com.nevtan.drive.config;
 
-import com.nevtan.drive.auth.DevBearerTokenAuthenticationFilter;
+import com.nevtan.drive.auth.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -17,10 +16,9 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 @Configuration
 @EnableWebSecurity
 @RequiredArgsConstructor
-@EnableConfigurationProperties(DriveAuthProperties.class)
 public class SecurityConfig {
 
-    private final DevBearerTokenAuthenticationFilter devBearerTokenAuthenticationFilter;
+    private final JwtAuthenticationFilter jwtAuthenticationFilter;
 
     @Bean
     SecurityFilterChain driveSecurityFilterChain(HttpSecurity http) throws Exception {
@@ -37,10 +35,14 @@ public class SecurityConfig {
                                 response.sendError(403)))
                 .authorizeHttpRequests(requests -> requests
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                        // Exchanging an SSO token happens before a Drive session exists.
+                        .requestMatchers("/api/drive/auth/sso").permitAll()
+                        .requestMatchers("/api/drive/auth/refresh").permitAll()
+                        .requestMatchers("/api/drive/auth/logout").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/drive/share/*").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(
-                        devBearerTokenAuthenticationFilter,
+                        jwtAuthenticationFilter,
                         UsernamePasswordAuthenticationFilter.class)
                 .build();
     }

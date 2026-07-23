@@ -1,5 +1,6 @@
 package com.nevtan.drive.controller;
 
+import com.nevtan.drive.auth.JwtService;
 import com.nevtan.drive.entity.DriveFile;
 import com.nevtan.drive.entity.DrivePermission;
 import com.nevtan.drive.entity.DrivePermissionRole;
@@ -40,6 +41,9 @@ class DriveAuthenticationAuthorizationTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private JwtService jwtService;
 
     @Autowired
     private DriveFileRepository fileRepository;
@@ -189,7 +193,8 @@ class DriveAuthenticationAuthorizationTest {
                 .build();
     }
 
+    /** A Drive session token, as issued after an SSO exchange. */
     private String bearer(String email) {
-        return "Bearer dev:" + email;
+        return "Bearer " + jwtService.generateToken("1", email);
     }
 }

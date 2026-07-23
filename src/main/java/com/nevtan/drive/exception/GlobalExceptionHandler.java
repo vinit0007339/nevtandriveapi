@@ -48,6 +48,14 @@ public class GlobalExceptionHandler {
         return response(HttpStatus.CONFLICT, exception.getMessage(), request);
     }
 
+    @ExceptionHandler(AuthenticationFailedException.class)
+    public ResponseEntity<ErrorResponse> handleAuthenticationFailed(
+            AuthenticationFailedException exception,
+            HttpServletRequest request
+    ) {
+        return response(HttpStatus.UNAUTHORIZED, exception.getMessage(), request);
+    }
+
     @ExceptionHandler(DriveAccessDeniedException.class)
     public ResponseEntity<ErrorResponse> handleAccessDenied(
             DriveAccessDeniedException exception,

@@ -33,22 +33,53 @@ Run with the production MySQL profile:
 SPRING_PROFILES_ACTIVE=prod java -jar target/nevtan-drive-api-0.0.1-SNAPSHOT.jar
 ```
 
-Private endpoints require an authenticated request. Local development supports
-an isolated development bearer token:
+Identity is owned by NevTan SSO. Drive never receives a password: the client
+signs in against the SSO, then exchanges that token for a Drive session — the
+same flow the CylonCloud API uses. Users are auto-provisioned into
+`drive_users` on first sign-in; sign-up and email verification happen in the
+SSO.
 
-```text
-Authorization: Bearer dev:user@example.com
+Step 1 — authenticate against the SSO:
+
+```bash
+curl -X POST "https://sso.nevtan.com/auth/signin" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"..."}'
+# -> { "data": { "accessToken": "<sso token>", ... } }
 ```
 
-The backend derives the current user from the validated principal, not from a
-query parameter or request body. Public share downloads do not require auth.
+Step 2 — exchange it for a Drive session:
+
+```bash
+curl -X POST "http://localhost:8081/api/drive/auth/sso" \
+  -H "Content-Type: application/json" \
+  -d '{"ssoToken":"<sso token>"}'
+# -> { "accessToken": "<drive token>", "refreshToken": "...", "expiresIn": 36000, "user": {...} }
+```
+
+Every other endpoint takes the Drive token:
+
+```text
+Authorization: Bearer <drive access token>
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/drive/auth/sso` | Exchange an SSO token for a Drive session |
+| `POST /api/drive/auth/refresh` | Rotate the refresh token, get a new session |
+| `POST /api/drive/auth/logout` | Revoke the refresh token |
+| `GET /api/drive/auth/me` | The signed-in user's profile |
+
+An SSO token is accepted only at the exchange endpoint, never as a session
+token. The current user comes from the validated token, never from a query
+parameter or request body. Public share downloads do not require auth.
 
 Example upload:
 
 ```bash
 curl -X POST \
   "http://localhost:8081/api/drive/upload" \
-  -H "Authorization: Bearer dev:user@example.com" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -F "file=@example.pdf"
 ```
 
@@ -146,7 +177,11 @@ Drive:
 | `DRIVE_BLOCKED_EXTENSIONS` | `.exe,.bat,.cmd,.sh,.js,.jar` |
 | `DRIVE_LOCAL_STORAGE_ROOT` | `./local-drive-storage` |
 | `DRIVE_SHARE_BASE_URL` | `http://localhost:5173/drive/share` |
-| `DRIVE_DEV_AUTH_ENABLED` | `true` |
+| `SSO_INTROSPECT_URL` | `https://sso.nevtan.com/oauth/introspect` |
+| `JWT_SECRET` | development-only default; **must** be overridden in deployments |
+| `JWT_EXPIRATION_MS` | `36000000` (10 hours) |
+| `JWT_REFRESH_EXPIRATION_MS` | `2592000000` (30 days) |
+| `DRIVE_CORS_ALLOWED_ORIGINS` | localhost dev origins plus the deployed Drive origins |
 
 MySQL stage/production:
 
@@ -161,9 +196,10 @@ MySQL stage/production:
 | `MYSQL_PASSWORD` | empty | empty |
 | `MYSQL_DDL_AUTO` | `update` | `validate` |
 
-For stage/prod, set `DRIVE_SHARE_BASE_URL` to the deployed frontend share URL
-and keep `DRIVE_DEV_AUTH_ENABLED=false` unless you are intentionally running
-with the local development bearer-token flow.
+For stage/prod, set `DRIVE_SHARE_BASE_URL` to the deployed frontend share URL,
+and set `JWT_SECRET` to a strong Base64 value of at least 256 bits. The prod
+profile intentionally provides no default for it, so the application fails to
+start rather than signing sessions with a publicly known key.
 
 NevTan Cloud:
 
